@@ -41,7 +41,9 @@ bin/carafe bridge build <appid>
 
 Как устроено:
 
-- SDK игры carafe узнаёт по версиям интерфейсов, зашитым в её `steam_api64.dll` (`bridge/sdk_detect.py`). Под каждый SDK в `bridge/sdk/<версия>/` лежит его `steam_api.json` из Steamworks.NET, а в `steamapi_mac` в `bin/carafe` — откуда брать `libsteam_api.dylib` того же SDK. Сейчас есть 1.60. Для другого SDK `bridge build` остановится и перечислит версии интерфейсов игры.
+- SDK игры carafe узнаёт по версиям интерфейсов, зашитым в её `steam_api64.dll` (`bridge/sdk_detect.py`). Если подходят несколько SDK, берётся самый полный.
+- Под каждый SDK в `bridge/sdk/<версия>/` лежит его `steam_api.json` из Steamworks.NET, а в `steamapi_mac` в `bin/carafe` — откуда брать `libsteam_api.dylib` того же SDK. В каталоге SDK 1.57, 1.60, 1.61, 1.62, 1.63 и 1.64.
+- Для SDK вне каталога `bridge build` остановится и перечислит версии интерфейсов игры. Новый SDK добавляется каталогом с json и строкой в `steamapi_mac`.
 - `bridge/gen.py` генерирует обе стороны из `steam_api.json` и самой DLL игры. Колбэки и структуры перекладываются между pack 8 (Windows) и pack 4 (Mac).
 - Слоты vtable берутся из кода flat-обёрток той же DLL: `mov rax,[rcx]; jmp [rax+N]`. В json нет приватных методов SDK, а место в vtable они занимают, поэтому json один не годится. Отсюда же видно, где MSVC переставляет перегрузки и где возвращает `CSteamID` через скрытый указатель.
 - Интерфейс отдаётся игре объектом с vtable, и flat-функции принимают его наравне с сырым указателем. Версию интерфейса не из SDK игры заглушка не выдаёт: вызов по чужой vtable уронил бы игру.
@@ -54,7 +56,10 @@ bin/carafe bridge build <appid>
 
 ```bash
 bin/carafe bridge test <appid>
+bin/carafe bridge test path/to/steam_api64.dll   # без игры: например, DLL из релиза Steamworks.NET
 ```
+
+`bridge build` тоже принимает путь к DLL. Так проверен весь каталог SDK, на эталонных `steam_api64.dll` Valve из релизов Steamworks.NET.
 
 `bridge/test/steamtest.c` собирается дважды: под Mac (с настоящим `libsteam_api.dylib`) и под Windows (под Wine грузит заглушку моста). Обе сборки работают от имени Spacewar (appid 480, тестовое приложение Valve), и их вывод должен совпасть строка в строку.
 
@@ -77,6 +82,8 @@ C++ (`bridge/test/cpptest.cpp`) компилируется настоящими 
 - `CCallback` на `UserStatsReceived_t` и `CCallResult` на `FindLeaderboard`.
 
 Spacewar после теста остаётся в истории игр, а в его лидерборде — твоя запись с результатом 1.
+
+Открытый вопрос: под мостом примерно в 3 прогонах из 15 сервер не показал переключение ачивки даже через 7 секунд, хотя `StoreStats` ответил успехом. Нативно такого не было ни разу из 17. Последовательность колбэков в обоих случаях одинаковая, причина пока не найдена, поэтому тест печатает EResult и номер попытки.
 
 При каждой сборке `build.sh` ещё сверяет с компиляторами то, что вычислил генератор:
 

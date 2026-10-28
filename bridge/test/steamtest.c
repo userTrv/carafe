@@ -10,6 +10,8 @@
 #include <stdarg.h>
 #include <string.h>
 
+#include "steam_ver.h" /* gen_header.py: имена аксессоров этого SDK */
+
 #ifdef _WIN32
 #include <windows.h>
 static HMODULE lib;
@@ -41,7 +43,6 @@ typedef struct { uint64_t user; int32_t rank; int32_t score; int32_t details; ui
 typedef struct { int32_t user; int32_t id; uint8_t *param; int32_t size; } CallbackMsg_t;
 
 #define FNS(X)                                                                                   \
-  X(int, SteamAPI_InitFlat, (char *))                                                            \
   X(int32_t, SteamAPI_GetHSteamUser, (void))                                                     \
   X(void, SteamAPI_RunCallbacks, (void))                                                         \
   X(void *, SteamInternal_FindOrCreateUserInterface, (int32_t, const char *))                    \
@@ -58,11 +59,6 @@ typedef struct { int32_t user; int32_t id; uint8_t *param; int32_t size; } Callb
   X(bool, SteamAPI_ManualDispatch_GetNextCallback, (int32_t, CallbackMsg_t *))                   \
   X(void, SteamAPI_ManualDispatch_FreeLastCallback, (int32_t))                                   \
   X(bool, SteamAPI_ManualDispatch_GetAPICallResult, (int32_t, uint64_t, void *, int, int, bool *)) \
-  X(void *, SteamAPI_SteamUser_v023, (void))                                                     \
-  X(void *, SteamAPI_SteamFriends_v017, (void))                                                  \
-  X(void *, SteamAPI_SteamUtils_v010, (void))                                                    \
-  X(void *, SteamAPI_SteamUserStats_v012, (void))                                                \
-  X(void *, SteamAPI_SteamRemoteStorage_v016, (void))                                            \
   X(bool, SteamAPI_ISteamUser_BLoggedOn, (void *))                                               \
   X(uint64_t, SteamAPI_ISteamUser_GetSteamID, (void *))                                          \
   X(uint32_t, SteamAPI_ISteamUtils_GetAppID, (void *))                                           \
@@ -73,7 +69,6 @@ typedef struct { int32_t user; int32_t id; uint8_t *param; int32_t size; } Callb
   X(bool, SteamAPI_ISteamUtils_GetAPICallResult, (void *, uint64_t, void *, int, int, bool *))   \
   X(const char *, SteamAPI_ISteamFriends_GetPersonaName, (void *))                               \
   X(int, SteamAPI_ISteamFriends_GetMediumFriendAvatar, (void *, uint64_t))                       \
-  X(bool, SteamAPI_ISteamUserStats_RequestCurrentStats, (void *))                                \
   X(uint32_t, SteamAPI_ISteamUserStats_GetNumAchievements, (void *))                             \
   X(const char *, SteamAPI_ISteamUserStats_GetAchievementName, (void *, uint32_t))               \
   X(const char *, SteamAPI_ISteamUserStats_GetAchievementDisplayAttribute, (void *, const char *, const char *)) \
@@ -100,6 +95,10 @@ typedef struct { int32_t user; int32_t id; uint8_t *param; int32_t size; } Callb
 
 #define DECL(ret, name, args) static ret(*name) args;
 FNS(DECL)
+/* Есть не во всех SDK: InitFlat — с 1.58, RequestCurrentStats — до 1.60. */
+static int (*SteamAPI_InitFlat)(char *);
+static bool (*SteamAPI_Init)(void);
+static bool (*SteamAPI_ISteamUserStats_RequestCurrentStats)(void *);
 
 static int failures;
 static int32_t pipe_;
@@ -236,10 +235,15 @@ static void test_identity(uint64_t *me) {
 }
 
 static void test_stats(uint64_t me) {
-  forget_cb(1101);
-  bool req = SteamAPI_ISteamUserStats_RequestCurrentStats(stats);
-  UserStatsReceived_t *r = (UserStatsReceived_t *)wait_cb(1101);
-  CHECK("stats.received", req && r && r->result == 1 && r->user == me);
+  /* С SDK 1.61 RequestCurrentStats нет: Steam грузит статы сам и колбэк не шлёт. */
+  if (SteamAPI_ISteamUserStats_RequestCurrentStats) {
+    forget_cb(1101);
+    bool req = SteamAPI_ISteamUserStats_RequestCurrentStats(stats);
+    UserStatsReceived_t *r = (UserStatsReceived_t *)wait_cb(1101);
+    CHECK("stats.received", req && r && r->result == 1 && r->user == me);
+  } else {
+    SAY("stats.received = не нужен в этом SDK");
+  }
 
   uint32_t n = SteamAPI_ISteamUserStats_GetNumAchievements(stats);
   SAY("stats.achievements = %u", n);
@@ -285,7 +289,8 @@ static void test_leaderboard(uint64_t me) {
   LeaderboardScoreUploaded_t up = {0};
   bool sent = wait_call(SteamAPI_ISteamUserStats_UploadLeaderboardScore(stats, fr.board, 1, 1, details, 3), &up, sizeof up, 1106);
   CHECK("lb.upload", sent && up.ok && up.board == fr.board && up.score == 1);
-  SAY("# загрузка: changed=%u rank %d -> %d", up.changed, up.rank_prev, up.rank_new);
+  SAY("# загрузка: ответ %d, ok=%u, своя доска %d, score %d, changed=%u rank %d -> %d", sent, up.ok,
+      up.board == fr.board, up.score, up.changed, up.rank_prev, up.rank_new);
 
   LeaderboardScoresDownloaded_t dl = {0};
   bool got = wait_call(SteamAPI_ISteamUserStats_DownloadLeaderboardEntries(stats, fr.board, 1, 0, 0), &dl, sizeof dl, 1105);
@@ -351,8 +356,11 @@ int main(int argc, char **argv) {
   if (!(name = (ret(*) args)sym(#name))) { SAY("sym.%s = FAIL", #name); return 2; }
   FNS(LOAD)
 
+  SteamAPI_InitFlat = (int (*)(char *))sym("SteamAPI_InitFlat");
+  SteamAPI_Init = (bool (*)(void))sym("SteamAPI_Init");
+  SteamAPI_ISteamUserStats_RequestCurrentStats = (bool (*)(void *))sym("SteamAPI_ISteamUserStats_RequestCurrentStats");
   char err[1024] = {0};
-  int init = SteamAPI_InitFlat(err);
+  int init = SteamAPI_InitFlat ? SteamAPI_InitFlat(err) : SteamAPI_Init && SteamAPI_Init() ? 0 : 1;
   SAY("init = %d", init);
   if (init != 0) { SAY("# %s", err); return 1; }
   if (argc > 2 && !strcmp(argv[2], "cpp")) {
@@ -369,11 +377,13 @@ int main(int argc, char **argv) {
   }
   SteamAPI_ManualDispatch_Init();
   pipe_ = SteamAPI_GetHSteamPipe();
-  user = SteamAPI_SteamUser_v023();
-  friends = SteamAPI_SteamFriends_v017();
-  utils = SteamAPI_SteamUtils_v010();
-  stats = SteamAPI_SteamUserStats_v012();
-  storage = SteamAPI_SteamRemoteStorage_v016();
+  void *(*acc)(void);
+#define ACC(var, name) var = (acc = (void *(*)(void))sym(name)) ? acc() : NULL
+  ACC(user, ACC_SteamUser);
+  ACC(friends, ACC_SteamFriends);
+  ACC(utils, ACC_SteamUtils);
+  ACC(stats, ACC_SteamUserStats);
+  ACC(storage, ACC_SteamRemoteStorage);
   CHECK("interfaces", user && friends && utils && stats && storage);
 
   uint64_t me = 0;

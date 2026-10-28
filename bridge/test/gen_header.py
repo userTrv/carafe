@@ -2,6 +2,8 @@
 """C++-заголовок интерфейсов Steamworks из steam_api.json — как их видит игра.
 
 gen_header.py <steam_api.json> <steam_api64.dll игры> <out.hpp>
+Рядом пишет steam_ver.h для C: имена flat-аксессоров (ACC_SteamUser…) и HAS_<класс>_<метод> —
+чтобы тест собирался под любой SDK из каталога.
 Порядок методов восстанавливается по слотам из DLL игры (gen.vtable_slots): json не знает
 приватных методов SDK, а место в vtable они занимают — на их месте ставятся заглушки.
 Раскладку из этого заголовка считает компилятор: clang под x86_64-pc-windows-msvc — как MSVC
@@ -23,7 +25,16 @@ BUILTIN = {"CSteamID", "CGameID"}
 def main(api_path, dll_path, out_path):
     api = json.loads(Path(api_path).read_text())
     vslots = gen.vtable_slots(api, dll_path)
-    L = ["/* сгенерировано gen_header.py — не править */", "#pragma once", "#include <stddef.h>", "#include <stdint.h>", "",
+    V = ["/* сгенерировано gen_header.py — не править */", "#pragma once"]
+    for i in api["interfaces"]:
+        for a in i.get("accessors") or []:
+            if a.get("kind") == "user":
+                V.append(f'#define ACC_{a["name"]} "{a["name_flat"]}"')
+        for m in {m["methodname"] for m in i["methods"]}:
+            V.append(f"#define HAS_{i['classname']}_{m} 1")
+    Path(out_path).with_name("steam_ver.h").write_text("\n".join(V) + "\n")
+    L = ["/* сгенерировано gen_header.py — не править */", "#pragma once", "#include <stddef.h>", "#include <stdint.h>",
+         '#include "steam_ver.h"', "",
          "#ifdef VT_DUMP", "#define PURE", "#else", "#define PURE = 0", "#endif", ""]
     for s in api["structs"] + api["callback_structs"]:
         if s["struct"] not in BUILTIN:

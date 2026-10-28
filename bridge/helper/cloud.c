@@ -18,7 +18,6 @@
 
 #include "steamd.h"
 
-extern int32_t SteamAPI_InitFlat(char *err);
 extern void SteamAPI_Shutdown(void);
 extern int32_t SteamAPI_GetHSteamPipe(void);
 extern int32_t SteamAPI_GetHSteamUser(void);
@@ -514,7 +513,7 @@ int cloud_main(int argc, char **argv) {
   strftime(g_stamp, sizeof g_stamp, "%Y%m%d-%H%M%S", localtime(&now));
 
   char err[1024] = {0};
-  if (SteamAPI_InitFlat(err) != 0) { fprintf(stderr, "carafe cloud: Steam недоступен: %s\n", err); return 1; }
+  if (steam_init(NULL, err) != 0) { fprintf(stderr, "carafe cloud: Steam недоступен: %s\n", err); return 1; }
   void *client = SteamInternal_CreateInterface("SteamClient021");
   g_um = client ? SteamAPI_ISteamClient_GetISteamGenericInterface(client, SteamAPI_GetHSteamUser(), SteamAPI_GetHSteamPipe(),
                                                                   "STEAMUNIFIEDMESSAGES_INTERFACE_VERSION001") : NULL;

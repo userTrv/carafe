@@ -32,7 +32,7 @@ static const cpp_api *A;
 #else
 #pragma pack(push, 4)
 #endif
-struct StatsReceived { uint64 game; int32 result; uint64 user; };  /* UserStatsReceived_t, 1101 */
+struct StatsStored { uint64 game; int32 result; };                  /* UserStatsStored_t, 1102 */
 struct BoardFound { uint64 board; uint8 found; };                   /* LeaderboardFindResult_t, 1104 */
 #pragma pack(pop)
 
@@ -47,12 +47,12 @@ static ISteamUser *SteamUser_() {
   return *(ISteamUser **)A->ContextInit(ctx);
 }
 
-struct StatsCallback : CCallbackBase {
+struct StoredCallback : CCallbackBase {
   bool got = false;
-  StatsReceived data = {};
-  void Run(void *p) override { data = *(StatsReceived *)p; got = true; }
+  StatsStored data = {};
+  void Run(void *p) override { data = *(StatsStored *)p; got = true; }
   void Run(void *p, bool, SteamAPICall_t) override { Run(p); }
-  int GetCallbackSizeBytes() override { return sizeof(StatsReceived); }
+  int GetCallbackSizeBytes() override { return sizeof(StatsStored); }
 };
 
 struct FindResult : CCallbackBase {
@@ -102,15 +102,15 @@ int cpp_tests(const struct cpp_api *api) {
   const char *name = friends->GetPersonaName();
   A->say("cpp.friends.persona = %08x", A->hash(name, slen(name)));
 
-  /* CCallback: UserStatsReceived_t после RequestCurrentStats. */
+  /* CCallback: UserStatsStored_t после StoreStats — широковещательный колбэк во всех SDK. */
   ISteamUserStats *stats = (ISteamUserStats *)A->FindOrCreateUserInterface(hu, VER_ISteamUserStats);
   A->check("cpp.stats.interface", stats != nullptr);
   if (!stats) return 1;
-  StatsCallback cb;
-  A->RegisterCallback(&cb, 1101);
-  bool req = stats->RequestCurrentStats();
+  StoredCallback cb;
+  A->RegisterCallback(&cb, 1102);
+  bool sent = stats->StoreStats();
   bool got = pump(&cb.got);
-  A->check("cpp.callback", req && got && cb.data.result == 1 && cb.data.user == id.m_steamid);
+  A->check("cpp.callback", sent && got && cb.data.result == 1 && cb.data.game == 480);
   A->UnregisterCallback(&cb);
 
   /* Перегрузки GetStat: у MSVC они в vtable в обратном порядке. Не та — вернёт false. */

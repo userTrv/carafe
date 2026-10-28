@@ -25,7 +25,12 @@ ZIG_SHA256="b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a"
 # Функция, а не ассоциативный массив: в macOS bash 3.2.
 steamapi_mac() {
   case "$1" in
+    1.57) echo "a3fe8091f7237eef3f38becc3faa29b2dc6f9ce9 4d47f19bdea2e7aba06a052570855903376ae47accca439ae9fb184528846d85" ;;  # Steamworks.NET 20.2.0
     1.60) echo "a2fc889ab2672981ec3e6225d551d86ce6923121 025a42fe02a40411429bc6afa7ff0092547408b03bf57d89da68413faed80176" ;;  # Steamworks.NET 2024.8.0
+    1.61) echo "eb0f4beeb7af1188b475602269b253dd2ec4aaed b2260d2b2ff6ac8d2d10770047967ceb18022fc5c27f94e3246bd7d2a1da82c0" ;;  # Steamworks.NET 2025.161.0
+    1.62) echo "af710043b9097e8ffedf74d67503c3a7eb498260 d828cbd6365daa2b16d3bd7dc2969c60e97f497c0996a6def0b7b174a7e19953" ;;  # Steamworks.NET 2025.162.1
+    1.63) echo "98d6584e4509dd514768cc28c3f02026fbdd6cc7 7824c030a7626ac1de9f1c6e03d45276721aa88ac419954b235cccf4546b15b3" ;;  # Steamworks.NET 2025.163.0
+    1.64) echo "c21a8f0e31c56ae8707130967faf491f7dd7c0d8 1e2282e1032851e423b501c2c483586793f1d5e11585edaae4c78d6a3abad1eb" ;;  # Steamworks.NET 2025.164.1
   esac
 }
 
@@ -41,8 +46,8 @@ usage() {
   carafe game install APPID USER   скачать Windows-сборку игры через steamcmd
   carafe game import APPID [DIR]   забрать depot, скачанный консолью Steam (download_depot)
   carafe game run APPID [ARGS...]  запустить игру (exe ищется в папке игры)
-  carafe bridge build APPID        собрать мост в Steam для Mac (ачивки, лидерборды)
-  carafe bridge test APPID         проверить мост игры на Spacewar (480) против нативного Steam
+  carafe bridge build APPID|DLL    собрать мост в Steam для Mac (ачивки, лидерборды)
+  carafe bridge test APPID|DLL     проверить мост на Spacewar (480) против нативного Steam
   carafe cloud status|pull|push APPID  сейвы со Steam Cloud (game run делает pull/push сам)
   carafe run EXE [ARGS...]         запустить произвольный .exe в префиксе
   carafe wine [ARGS...]            вызвать wine с окружением префикса (winecfg и т. п.)
@@ -213,10 +218,17 @@ ensure_zig() {
   echo "$z"
 }
 
+# Оригинальный steam_api64.dll: игры по APPID или файл по пути (проверить мост на SDK без игры).
+bridge_source_dll() {
+  local arg="${1:?нужен APPID или путь к steam_api64.dll}" pair
+  if [[ -f "$arg" ]]; then echo "$arg"; return; fi
+  pair="$(steam_api_orig "$GAMES/$arg")" || die "в игре нет steam_api64.dll — мост не нужен"
+  echo "${pair##*|}"
+}
+
 cmd_bridge_build() {
-  local appid="${1:?нужен APPID}" pair live orig sha entry commit dsha
-  pair="$(steam_api_orig "$GAMES/$appid")" || die "в игре нет steam_api64.dll — мост не нужен"
-  live="${pair%%|*}" orig="${pair##*|}"
+  local orig sha entry commit dsha
+  orig="$(bridge_source_dll "${1:-}")"
   sha="$(shasum -a 256 "$orig" | cut -d' ' -f1)"
   local sdk; sdk="$(python3 -I "$CARAFE_SRC/bridge/sdk_detect.py" "$orig" "$CARAFE_SRC/bridge/sdk")" \
     || die "мост для этого SDK пока не собрать: нужен его steam_api.json в bridge/sdk/ и строка в steamapi_mac"
@@ -280,22 +292,22 @@ start_steamd() {
 
 # Прогнать bridge/test/steamtest.c на Spacewar (480): нативно на Mac и под Wine через мост игры APPID.
 cmd_bridge_test() {
-  local appid="${1:?нужен APPID игры, чей мост проверяем}" pair sha
-  pair="$(steam_api_orig "$GAMES/$appid")" || die "в игре нет steam_api64.dll"
-  sha="$(shasum -a 256 "${pair##*|}" | cut -d' ' -f1)"
+  local orig sha
+  orig="$(bridge_source_dll "${1:-}")"
+  sha="$(shasum -a 256 "$orig" | cut -d' ' -f1)"
   local b="$BRIDGES/$sha" t="$BRIDGES/$sha/test"
-  [[ -x "$b/carafe-steamd" ]] || die "мост не собран: carafe bridge build $appid"
+  [[ -x "$b/carafe-steamd" ]] || die "мост не собран: carafe bridge build $1"
   mkdir -p "$t"
   local zig src="$CARAFE_SRC/bridge/test"
   zig="$(ensure_zig)"
   # C++-часть: заголовок по слотам DLL игры; под Mac — Itanium ABI, под Windows — ABI MSVC, как у игр.
-  python3 -I "$src/gen_header.py" "$CARAFE_SRC/bridge/sdk/$(cat "$b/sdk")/steam_api.json" "${pair##*|}" "$t/steam_iface.hpp"
+  python3 -I "$src/gen_header.py" "$CARAFE_SRC/bridge/sdk/$(cat "$b/sdk")/steam_api.json" "$orig" "$t/steam_iface.hpp"
   clang++ -std=c++17 -O1 -fno-exceptions -fno-rtti -I"$t" -c -o "$t/cpptest.o" "$src/cpptest.cpp"
-  clang -O1 -Wall -c -o "$t/steamtest.o" "$src/steamtest.c"
+  clang -O1 -Wall -I"$t" -c -o "$t/steamtest.o" "$src/steamtest.c"
   clang++ -o "$t/steamtest" "$t/steamtest.o" "$t/cpptest.o"
   clang -target x86_64-pc-windows-msvc -std=c++17 -O1 -fno-exceptions -fno-rtti -fno-autolink -fno-stack-protector \
     -x c++ -I"$t" -c -o "$t/cpptest.obj" "$src/cpptest.cpp"
-  "$zig" cc -target x86_64-windows-gnu -O1 -Wall -o "$t/steamtest.exe" "$src/steamtest.c" "$t/cpptest.obj"
+  "$zig" cc -target x86_64-windows-gnu -O1 -Wall -I"$t" -o "$t/steamtest.exe" "$src/steamtest.c" "$t/cpptest.obj"
   cp "$b/steam_api64.dll" "$t/steam_api64.dll"
 
   # В сравнение идут только строки теста: шум libsteam_api и Wine, CRLF Windows-сборки — мимо.

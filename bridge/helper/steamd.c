@@ -1,5 +1,6 @@
 /* carafe-steamd: нативный хелпер, через который Windows-игра под Wine говорит со Steam для Mac. */
 #include <arpa/inet.h>
+#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -12,8 +13,7 @@
 #include "steamd.h"
 #include "layouts.h"
 
-extern int32_t SteamInternal_SteamAPI_Init(const char *versions, char *err);
-extern int32_t SteamAPI_InitFlat(char *err);
+extern bool SteamAPI_Init(void);
 extern void SteamAPI_Shutdown(void);
 extern int32_t SteamAPI_GetHSteamPipe(void);
 extern int32_t SteamAPI_GetHSteamUser(void);
@@ -32,6 +32,18 @@ extern bool SteamAPI_ISteamUtils_GetAPICallResult(void *self, uint64_t call, voi
 static FILE *g_log;
 static bool g_inited;
 static bool g_served;  /* игра хоть раз инициализировала Steam: её уход — конец работы */
+
+/* SteamInternal_SteamAPI_Init и SteamAPI_InitFlat появились в SDK 1.58; в старых libsteam_api
+   есть только SteamAPI_Init(). Ищем новые при запуске, чтобы хелпер собирался под любой SDK. */
+int32_t steam_init(const char *versions, char *err) {
+  int32_t (*internal)(const char *, char *) = (int32_t(*)(const char *, char *))dlsym(RTLD_DEFAULT, "SteamInternal_SteamAPI_Init");
+  int32_t (*flat)(char *) = (int32_t(*)(char *))dlsym(RTLD_DEFAULT, "SteamAPI_InitFlat");
+  if (versions && internal) return internal(versions, err);
+  if (flat) return flat(err);
+  if (SteamAPI_Init()) return 0;
+  snprintf(err, 1024, "SteamAPI_Init() не прошёл");
+  return 1; /* k_ESteamAPIInitResult_FailedGeneric */
+}
 
 /* --- память запроса --- */
 static void *g_tmp[256];
@@ -111,7 +123,7 @@ static int core(uint32_t id, br *r, bw *w) {
   case CORE_INIT: {
     const char *versions = br_str(r);
     char err[1024] = {0};
-    int32_t res = g_inited ? 0 : versions ? SteamInternal_SteamAPI_Init(versions, err) : SteamAPI_InitFlat(err);
+    int32_t res = g_inited ? 0 : steam_init(versions, err);
     if (res == 0) g_inited = g_served = true;
     if (g_log) fprintf(g_log, "SteamAPI init: %d %s\n", res, err);
     bw_u64(w, (uint64_t)(int64_t)res);

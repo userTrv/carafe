@@ -12,3 +12,6 @@ void log_arg(uint32_t id, const char *param, const char *value);
 const char *gen_name(uint32_t id);
 /* 1 — обработано, 0 — неизвестный id, -1 — плохой запрос. */
 int gen_dispatch(uint32_t id, br *r, bw *w);
+
+/* Инициализация Steam с любым SDK: versions — строка версий игры или NULL. */
+int32_t steam_init(const char *versions, char *err);
