@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+# carafe — минимальный запускатель Windows-игр на macOS: Wine + D3DMetal + steamcmd.
+set -euo pipefail
+
+CARAFE_HOME="${CARAFE_HOME:-$HOME/Library/Application Support/carafe}"
+ENGINES="$CARAFE_HOME/engines"
+BOTTLES="$CARAFE_HOME/bottles"
+GAMES="$CARAFE_HOME/games"
+STEAMCMD_DIR="$CARAFE_HOME/steamcmd"
+
+# Движок по умолчанию: сборка Wine от Gcenx с D3DMetal из Apple Game Porting Toolkit 3.0.
+ENGINE_NAME="gptk-3.0-3"
+ENGINE_URL="https://github.com/Gcenx/game-porting-toolkit/releases/download/Game-Porting-Toolkit-3.0-3/game-porting-toolkit-3.0-3.tar.xz"
+ENGINE_SHA256="d377683937340f914823dbb2e1252b329cbf834ff58907d0293db8cebf0e392e"
+STEAMCMD_URL="https://steamcdn-a.akamaihd.net/client/installer/steamcmd_osx.tar.gz"
+
+die() { echo "carafe: $*" >&2; exit 1; }
+log() { echo "==> $*" >&2; }
+
+usage() {
+  cat <<'EOF'
+Использование:
+  carafe engine install            скачать и распаковать Wine + D3DMetal
+  carafe bottle create [NAME]      создать префикс Wine (по умолчанию: default)
+  carafe steam login USER          войти в steamcmd (пароль и Steam Guard вводишь сам)
+  carafe game install APPID USER   скачать Windows-сборку игры через steamcmd
+  carafe game run APPID [ARGS...]  запустить игру (exe ищется в папке игры)
+  carafe run EXE [ARGS...]         запустить произвольный .exe в префиксе
+  carafe wine [ARGS...]            вызвать wine с окружением префикса (winecfg и т. п.)
+
+Переменные: CARAFE_BOTTLE (префикс, default), CARAFE_EXE (exe игры вручную),
+            CARAFE_HUD=1 (Metal HUD с FPS).
+EOF
+}
+
+engine_dir() { echo "$ENGINES/$ENGINE_NAME"; }
+
+wine_bin() {
+  local d; d="$(engine_dir)"
+  [[ -d "$d" ]] || die "движок не установлен: carafe engine install"
+  local w
+  for name in wine64 wine; do
+    w="$(find "$d" -type f -path "*/bin/$name" -perm -u+x 2>/dev/null | head -1)"
+    [[ -n "$w" ]] && { echo "$w"; return; }
+  done
+  die "не нашёл bin/wine в $d"
+}
+
+wine_env() {
+  local bottle="${CARAFE_BOTTLE:-default}"
+  export WINEPREFIX="$BOTTLES/$bottle"
+  export WINEDEBUG="${WINEDEBUG:--all}"
+  export WINEMSYNC="${WINEMSYNC:-1}"
+  export WINEESYNC="${WINEESYNC:-1}"
+  [[ "${CARAFE_HUD:-0}" == 1 ]] && export MTL_HUD_ENABLED=1
+  local bin; bin="$(dirname "$(wine_bin)")"
+  export PATH="$bin:$PATH"
+}
+
+cmd_engine_install() {
+  local dl="$ENGINES/dl" tarball="$ENGINES/dl/${ENGINE_URL##*/}"
+  mkdir -p "$dl"
+  if [[ ! -f "$tarball" ]]; then
+    log "качаю движок ${ENGINE_URL##*/}"
+    curl -fL --retry 5 -C - -o "$tarball.part" "$ENGINE_URL"
+    mv "$tarball.part" "$tarball"
+  fi
+  echo "$ENGINE_SHA256  $tarball" | shasum -a 256 -c - >/dev/null || die "sha256 архива не совпал"
+  local d; d="$(engine_dir)"
+  rm -rf "$d.tmp" && mkdir -p "$d.tmp"
+  log "распаковываю в $d"
+  tar -xJf "$tarball" -C "$d.tmp"
+  # Карантин macOS блокирует запуск скачанных бинарников.
+  xattr -dr com.apple.quarantine "$d.tmp" 2>/dev/null || true
+  rm -rf "$d" && mv "$d.tmp" "$d"
+  log "готово: $(wine_bin)"
+}
+
+cmd_bottle_create() {
+  CARAFE_BOTTLE="${1:-${CARAFE_BOTTLE:-default}}"
+  wine_env
+  log "создаю префикс $WINEPREFIX"
+  mkdir -p "$WINEPREFIX"
+  "$(wine_bin)" wineboot --init
+  # Windows 10 — то, что ждут современные Unity-игры.
+  "$(wine_bin)" reg add 'HKCU\Software\Wine' /v Version /d win10 /f >/dev/null
+  wineserver -w
+  log "префикс готов"
+}
+
+ensure_steamcmd() {
+  if [[ ! -x "$STEAMCMD_DIR/steamcmd.sh" ]]; then
+    log "качаю steamcmd от Valve"
+    mkdir -p "$STEAMCMD_DIR"
+    curl -fsSL -o "$STEAMCMD_DIR/steamcmd_osx.tar.gz" "$STEAMCMD_URL"
+    tar -xzf "$STEAMCMD_DIR/steamcmd_osx.tar.gz" -C "$STEAMCMD_DIR"
+    rm "$STEAMCMD_DIR/steamcmd_osx.tar.gz"
+  fi
+}
+
+cmd_steam_login() {
+  local user="${1:?нужен логин Steam}"
+  ensure_steamcmd
+  "$STEAMCMD_DIR/steamcmd.sh" +login "$user" +quit
+}
+
+cmd_game_install() {
+  local appid="${1:?нужен APPID}" user="${2:?нужен логин Steam}"
+  ensure_steamcmd
+  mkdir -p "$GAMES/$appid"
+  "$STEAMCMD_DIR/steamcmd.sh" \
+    +@sSteamCmdForcePlatformType windows \
+    +force_install_dir "$GAMES/$appid" \
+    +login "$user" \
+    +app_update "$appid" validate \
+    +quit
+  # Steamworks внутри игры ищет appid рядом с exe, когда Steam-клиент не запущен.
+  echo "$appid" > "$GAMES/$appid/steam_appid.txt"
+}
+
+find_game_exe() {
+  local dir="$1"
+  [[ -n "${CARAFE_EXE:-}" ]] && { echo "$dir/$CARAFE_EXE"; return; }
+  # Самый крупный exe верхнего уровня, кроме служебных.
+  find "$dir" -maxdepth 1 -iname '*.exe' ! -iname 'UnityCrashHandler*' ! -iname '*setup*' ! -iname '*redist*' \
+    -exec stat -f '%z %N' {} + 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-
+}
+
+cmd_run() {
+  local exe="${1:?нужен путь к exe}"; shift
+  [[ -f "$exe" ]] || die "нет файла $exe"
+  wine_env
+  [[ -d "$WINEPREFIX" ]] || cmd_bottle_create "${CARAFE_BOTTLE:-default}"
+  cd "$(dirname "$exe")"
+  exec "$(wine_bin)" "$(basename "$exe")" "$@"
+}
+
+cmd_game_run() {
+  local appid="${1:?нужен APPID}"; shift
+  local exe; exe="$(find_game_exe "$GAMES/$appid")"
+  [[ -n "$exe" ]] || die "не нашёл exe в $GAMES/$appid (задай CARAFE_EXE)"
+  log "запускаю $exe"
+  cmd_run "$exe" "$@"
+}
+
+cmd_wine() { wine_env; exec "$(wine_bin)" "$@"; }
+
+case "${1:-}" in
+  engine) [[ "${2:-}" == install ]] || { usage; exit 1; }; cmd_engine_install ;;
+  bottle) [[ "${2:-}" == create ]] || { usage; exit 1; }; cmd_bottle_create "${3:-}" ;;
+  steam) [[ "${2:-}" == login ]] || { usage; exit 1; }; cmd_steam_login "${3:-}" ;;
+  game)
+    case "${2:-}" in
+      install) cmd_game_install "${3:-}" "${4:-}" ;;
+      run) shift 2; cmd_game_run "$@" ;;
+      *) usage; exit 1 ;;
+    esac ;;
+  run) shift; cmd_run "$@" ;;
+  wine) shift; cmd_wine "$@" ;;
+  -h|--help|help|"") usage ;;
+  *) usage; exit 1 ;;
+esac
