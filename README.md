@@ -20,6 +20,12 @@ bin/carafe game install <appid> <steam-логин>
 bin/carafe game run <appid>
 ```
 
+Без steamcmd — через уже залогиненный Steam для Mac: открой `steam://open/console`, выполни `download_depot <appid> <windows-depot>`, затем:
+
+```bash
+bin/carafe game import <appid>
+```
+
 Переменные окружения:
 
 | Переменная      | Что делает                                  |

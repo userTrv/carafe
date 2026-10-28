@@ -24,6 +24,7 @@ usage() {
   carafe bottle create [NAME]      создать префикс Wine (по умолчанию: default)
   carafe steam login USER          войти в steamcmd (пароль и Steam Guard вводишь сам)
   carafe game install APPID USER   скачать Windows-сборку игры через steamcmd
+  carafe game import APPID [DIR]   забрать depot, скачанный консолью Steam (download_depot)
   carafe game run APPID [ARGS...]  запустить игру (exe ищется в папке игры)
   carafe run EXE [ARGS...]         запустить произвольный .exe в префиксе
   carafe wine [ARGS...]            вызвать wine с окружением префикса (winecfg и т. п.)
@@ -118,6 +119,21 @@ cmd_game_install() {
   echo "$appid" > "$GAMES/$appid/steam_appid.txt"
 }
 
+# Забрать игру, скачанную основным Steam-клиентом через консоль (download_depot).
+cmd_game_import() {
+  local appid="${1:?нужен APPID}" src="${2:-}"
+  if [[ -z "$src" ]]; then
+    src="$(find "$HOME/Library/Application Support/Steam" -type d -path "*/steamapps/content/app_$appid/depot_*" -maxdepth 8 2>/dev/null | head -1)"
+    [[ -n "$src" ]] || die "не нашёл app_$appid в steamapps/content — скачай depot через консоль Steam или укажи папку"
+  fi
+  [[ -d "$src" ]] || die "нет папки $src"
+  log "переношу $src → $GAMES/$appid"
+  mkdir -p "$GAMES/$appid"
+  rsync -a "$src/" "$GAMES/$appid/"
+  echo "$appid" > "$GAMES/$appid/steam_appid.txt"
+  log "готово, удалить исходник можно руками: $src"
+}
+
 find_game_exe() {
   local dir="$1"
   [[ -n "${CARAFE_EXE:-}" ]] && { echo "$dir/$CARAFE_EXE"; return; }
@@ -152,6 +168,7 @@ case "${1:-}" in
   game)
     case "${2:-}" in
       install) cmd_game_install "${3:-}" "${4:-}" ;;
+      import) cmd_game_import "${3:-}" "${4:-}" ;;
       run) shift 2; cmd_game_run "$@" ;;
       *) usage; exit 1 ;;
     esac ;;
