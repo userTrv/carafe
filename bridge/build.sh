@@ -21,8 +21,8 @@ warn=(-Wall -Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variab
 
 cp "$dylib" "$out/libsteam_api.dylib"
 clang -O2 "${warn[@]}" -I"$here/helper" -I"$out/gen" \
-  "$here/helper/steamd.c" "$out/gen/helper_gen.c" \
-  -L"$out" -lsteam_api -Wl,-rpath,@executable_path \
+  "$here/helper/steamd.c" "$here/helper/cloud.c" "$out/gen/helper_gen.c" \
+  -L"$out" -lsteam_api -lcurl -Wl,-rpath,@executable_path \
   -o "$out/carafe-steamd"
 
 echo "готово: $out/steam_api64.dll, $out/carafe-steamd" >&2

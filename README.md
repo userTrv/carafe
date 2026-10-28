@@ -43,9 +43,21 @@ bin/carafe bridge build <appid>
 
 `CARAFE_BRIDGE=0` запускает игру с оригинальной DLL.
 
-## Ограничения
+## Steam Cloud
 
-Steam Cloud не синхронизируется: Auto-Cloud с Windows-путями Steam для Mac не видит даже через мост. Сейвы можно забрать вручную со страницы `https://store.steampowered.com/account/remotestorageapp/?appid=<appid>` и положить в папку игры в префиксе (у Unity-игр — `drive_c/users/crossover/AppData/LocalLow/...`). С мостом игра видит Steam ID и пишет сейвы в папку под ним, а не в `0`.
+```bash
+bin/carafe cloud status <appid>   # что куда поедет
+bin/carafe cloud pull <appid>
+bin/carafe cloud push <appid>
+```
+
+`game run` сам делает `pull` перед запуском и `push` после выхода (`CARAFE_CLOUD=0` — не трогать облако). Steam для Mac Auto-Cloud с Windows-путями не обслуживает, поэтому carafe делает это сам: правила `ufs` игры берёт из `app_info_print` steamcmd, а с облаком говорит через сервис `Cloud` Steam-клиента (`ISteamUnifiedMessages`) — тот же путь, что у самого клиента, без логина и пароля.
+
+- Что синхронизировано, carafe помнит в `games/<appid>/.carafe-cloud-state`. Изменился один файл — едет в ту сторону. Изменились оба — побеждает более новый.
+- Перед перезаписью проигравшая версия, локальная или облачная, кладётся в `backups/<appid>/<время>/`.
+- Файлы облака, зашифрованные Steam, carafe не загружает и не перезаписывает.
+
+## Ограничения
 
 Без моста `SteamAPI_Init()` у игры не проходит: нет ни лидербордов, ни ачивок.
 

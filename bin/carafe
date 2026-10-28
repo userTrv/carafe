@@ -43,6 +43,7 @@ usage() {
   carafe game import APPID [DIR]   забрать depot, скачанный консолью Steam (download_depot)
   carafe game run APPID [ARGS...]  запустить игру (exe ищется в папке игры)
   carafe bridge build APPID        собрать мост в Steam для Mac (ачивки, лидерборды)
+  carafe cloud status|pull|push APPID  сейвы со Steam Cloud (game run делает pull/push сам)
   carafe run EXE [ARGS...]         запустить произвольный .exe в префиксе
   carafe wine [ARGS...]            вызвать wine с окружением префикса (winecfg и т. п.)
 
@@ -256,6 +257,51 @@ apply_bridge() {
   echo "$b"
 }
 
+# Правила Auto-Cloud игры (ufs/savefiles из appinfo) → строки ROOT:PATH:PATTERN:RECURSIVE.
+cloud_rules() {
+  local appid="$1" cache="$GAMES/$1/.carafe-ufs"
+  if [[ ! -s "$cache" ]]; then
+    ensure_steamcmd
+    "$STEAMCMD_DIR/steamcmd.sh" +login anonymous +app_info_print "$appid" +quit 2>/dev/null |
+      # VDF: глубина по скобкам; в строке "ключ" "значение" это поля 2 и 4 при разделителе-кавычке.
+      awk -F'"' '
+        $2 == "savefiles" && depth == 0 { want = 1; next }
+        want && /{/ { depth++; if (depth == 2) { root = path = pat = ""; rec = 0 }; next }
+        want && /}/ { if (depth == 2 && root != "") print root ":" path ":" pat ":" rec
+                      depth--; if (depth == 0) want = 0; next }
+        want && depth == 2 && $2 == "root" { root = $4 }
+        want && depth == 2 && $2 == "path" { path = $4 }
+        want && depth == 2 && $2 == "pattern" { pat = $4 }
+        want && depth == 2 && $2 == "recursive" { rec = $4 }
+      ' > "$cache.tmp" || true
+    mv "$cache.tmp" "$cache"
+  fi
+  cat "$cache"
+}
+
+# Синхронизация сейвов со Steam Cloud через Steam для Mac. mode: status|pull|push.
+cloud_sync() {
+  local mode="$1" appid="$2" pair orig sha
+  pair="$(steam_api_orig "$GAMES/$appid")" || die "в игре нет steam_api64.dll — облака у неё нет"
+  orig="${pair##*|}"
+  sha="$(shasum -a 256 "$orig" | cut -d' ' -f1)"
+  local steamd="$BRIDGES/$sha/carafe-steamd"
+  [[ -x "$steamd" ]] || die "сначала собери мост: carafe bridge build $appid"
+  local users="$BOTTLES/${CARAFE_BOTTLE:-default}/drive_c/users" u
+  u="$(find "$users" -mindepth 1 -maxdepth 1 -type d ! -name Public | head -1)"
+  [[ -n "$u" ]] || die "в префиксе нет пользователя"
+  local args=(cloud "$mode"
+    --state "$GAMES/$appid/.carafe-cloud-state" --backup "$CARAFE_HOME/backups/$appid"
+    --root "WinAppDataLocalLow=$u/AppData/LocalLow" --root "WinAppDataLocal=$u/AppData/Local"
+    --root "WinAppDataRoaming=$u/AppData/Roaming" --root "WinMyDocuments=$u/Documents"
+    --root "WinSavedGames=$u/Saved Games" --root "gameinstall=$GAMES/$appid")
+  local r n=0
+  while IFS= read -r r; do [[ -n "$r" ]] && { args+=(--rule "$r"); n=$((n + 1)); }; done < <(cloud_rules "$appid")
+  [[ $n -gt 0 ]] || { log "у игры нет правил Auto-Cloud — синхронизировать нечего"; return 0; }
+  log "Steam Cloud: $mode"
+  SteamAppId="$appid" "$steamd" "${args[@]}"
+}
+
 cmd_game_run() {
   local appid="${1:?нужен APPID}"; shift
   local exe; exe="$(find_game_exe "$GAMES/$appid")"
@@ -265,6 +311,13 @@ cmd_game_run() {
   if [[ -z "$bridge" ]]; then
     log "запускаю $exe"
     cmd_run "$exe" "$@"
+  fi
+
+  # Облако до запуска: игра должна увидеть свежие сейвы. Ошибка синхронизации не мешает играть.
+  local cloud="${CARAFE_CLOUD:-1}"
+  if [[ "$cloud" == 1 ]] && ! cloud_sync pull "$appid"; then
+    log "Steam Cloud: не удалось скачать сейвы — играю с локальными, выгружать после игры не буду"
+    cloud=0
   fi
 
   # Хелпер живёт, пока идёт игра: SteamAppId говорит Steam, за какую игру он выступает.
@@ -285,6 +338,10 @@ cmd_game_run() {
   # Лаунчер wine может выйти раньше игры, поэтому хелпер не убиваем: он сам завершится,
   # когда игра закроет соединение (или через 2 минуты, если она так и не подключилась).
   wait "$steamd" 2>/dev/null || true
+  # Хелпер выходит, когда игра отключилась, — значит, сейвы уже на диске.
+  if [[ "$cloud" == 1 ]]; then
+    cloud_sync push "$appid" || log "Steam Cloud: выгрузка не удалась — повтори: carafe cloud push $appid"
+  fi
   return "$rc"
 }
 
@@ -306,6 +363,11 @@ case "${1:-}" in
       *) usage; exit 1 ;;
     esac ;;
   bridge) [[ "${2:-}" == build ]] || { usage; exit 1; }; cmd_bridge_build "${3:-}" ;;
+  cloud)
+    case "${2:-}" in
+      status|pull|push) cloud_sync "$2" "${3:?нужен APPID}" ;;
+      *) usage; exit 1 ;;
+    esac ;;
   run) shift; cmd_run "$@" ;;
   wine) shift; cmd_wine "$@" ;;
   -h|--help|help|"") usage ;;

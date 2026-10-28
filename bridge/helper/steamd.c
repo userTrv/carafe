@@ -225,7 +225,10 @@ static void serve(int fd, const char *token) {
   }
 }
 
-int main(void) {
+int cloud_main(int argc, char **argv);
+
+int main(int argc, char **argv) {
+  if (argc > 1 && !strcmp(argv[1], "cloud")) return cloud_main(argc, argv);
   const char *token = getenv("CARAFE_BRIDGE_TOKEN");
   if (!token || strlen(token) < 32) {
     fprintf(stderr, "carafe-steamd: нужен CARAFE_BRIDGE_TOKEN\n");
