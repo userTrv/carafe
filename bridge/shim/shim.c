@@ -142,7 +142,51 @@ void bridge_unsupported(const char *name) {
   logf_("не поддержано: %s", name);
 }
 
+/* --- объекты интерфейсов --- */
+
+typedef struct { void *const *vtbl; void *mac; int cls; } iface_obj;
+static iface_obj g_objs[256];
+static int g_nobjs;
+
+void *bridge_unwrap(void *p) {
+  iface_obj *o = (iface_obj *)p;
+  return o >= g_objs && o < g_objs + 256 ? o->mac : p;
+}
+
+void *bridge_wrap(void *mac, int cls, const char *ver) {
+  if (!mac) return NULL;
+  if (ver) {
+    int v = -1;
+    for (int i = 0; i < N_IFACES; i++)
+      if (!strcmp(IFACES[i].ver, ver)) v = i;
+    if (v < 0 || (cls >= 0 && v != cls)) {
+      /* Версия не из SDK игры: раскладки её методов мы не знаем. NULL игра переживёт
+         («интерфейс недоступен»), а вызов по чужой vtable — нет. */
+      bridge_unsupported(bridge_intern(ver));
+      return NULL;
+    }
+    cls = v;
+  }
+  if (cls < 0 || !IFACES[cls].vtbl) return mac;
+  InitOnceExecuteOnce(&g_once, init_lock, NULL, NULL);
+  EnterCriticalSection(&g_lock);
+  iface_obj *o = NULL;
+  for (int i = 0; i < g_nobjs && !o; i++)
+    if (g_objs[i].mac == mac && g_objs[i].cls == cls) o = &g_objs[i];
+  if (!o && g_nobjs < 256) {
+    o = &g_objs[g_nobjs++];
+    o->vtbl = IFACES[cls].vtbl;
+    o->mac = mac;
+    o->cls = cls;
+  }
+  LeaveCriticalSection(&g_lock);
+  return o ? (void *)o : mac;
+}
+
 /* --- ядро --- */
+
+/* Счётчик для SteamInternal_ContextInit: меняется на каждом Init, кэш аксессоров игры сбрасывается. */
+static uintptr_t g_ctx_counter = 1;
 
 static int32_t do_init(const char *versions, char *err) {
   bw w; br r;
@@ -153,6 +197,7 @@ static int32_t do_init(const char *versions, char *err) {
     return 2; /* k_ESteamAPIInitResult_NoSteamClient */
   }
   int32_t res = (int32_t)br_u64(&r);
+  if (res == 0) g_ctx_counter++;
   const char *msg = br_str(&r);
   if (err) { strncpy(err, msg ? msg : "", 1023); err[1023] = 0; }
   bridge_done(&r);
@@ -177,11 +222,23 @@ static uint64_t simple(uint32_t id, bool with_arg, uint64_t arg) {
   return v;
 }
 
-EXPORT void SteamAPI_Shutdown(void) { simple(CORE_SHUTDOWN, false, 0); }
+static int32_t g_pipe;
+
+EXPORT void SteamAPI_Shutdown(void) { simple(CORE_SHUTDOWN, false, 0); g_ctx_counter++; g_pipe = 0; }
+
+/* Инлайновые SteamUser() и т. п. из SDK: { функция-инициализатор, счётчик, контекст }.
+   Инициализатор игры сам зовёт SteamInternal_FindOrCreateUserInterface. */
+EXPORT void *SteamInternal_ContextInit(void *data) {
+  struct { void (*init)(void *ctx); uintptr_t counter; void *ctx; } *d = data;
+  if (d->counter != g_ctx_counter) {
+    d->init(&d->ctx);
+    d->counter = g_ctx_counter;
+  }
+  return &d->ctx;
+}
 EXPORT bool SteamAPI_IsSteamRunning(void) { return !g_dead; }
 EXPORT int32_t SteamAPI_GetHSteamPipe(void) { return (int32_t)simple(CORE_GET_PIPE, false, 0); }
 EXPORT int32_t SteamAPI_GetHSteamUser(void) { return (int32_t)simple(CORE_GET_USER, false, 0); }
-EXPORT void SteamAPI_RunCallbacks(void) { simple(CORE_RUN_CALLBACKS, false, 0); }
 EXPORT void SteamAPI_ManualDispatch_Init(void) { simple(CORE_MD_INIT, false, 0); }
 EXPORT void SteamAPI_ManualDispatch_RunFrame(int32_t pipe) { simple(CORE_MD_RUN_FRAME, true, (uint64_t)pipe); }
 
@@ -249,5 +306,137 @@ EXPORT bool SteamAPI_ManualDispatch_GetAPICallResult(int32_t pipe, uint64_t call
 
 EXPORT bool SteamAPI_ISteamUtils_GetAPICallResult(void *self, uint64_t call, void *out, int32_t cub,
                                                   int32_t expected, bool *failed) {
-  return call_result(CORE_UTILS_CALL_RESULT, self, 0, call, out, cub, expected, failed);
+  return call_result(CORE_UTILS_CALL_RESULT, bridge_unwrap(self), 0, call, out, cub, expected, failed);
+}
+
+/* --- CCallback / CCallResult для C++-игр ---
+   Объект игры в раскладке MSVC: vtable, uint8 flags (+8), int iCallback (+12).
+   Слоты vtable (перегрузки Run у MSVC в обратном порядке): 0 — Run(param, failed, call),
+   1 — Run(param), 2 — GetCallbackSizeBytes(). Сами колбэки берём через ManualDispatch. */
+typedef struct { void **vtbl; uint8_t flags; int32_t icb; } ccallback;
+typedef void (*run3_fn)(ccallback *, void *, bool, uint64_t);
+typedef void (*run1_fn)(ccallback *, void *);
+typedef int (*size_fn)(ccallback *);
+enum { CB_REGISTERED = 1, CB_GAMESERVER = 2 };
+
+static CRITICAL_SECTION g_cblock;
+static INIT_ONCE g_cbonce = INIT_ONCE_STATIC_INIT;
+static BOOL CALLBACK init_cblock(PINIT_ONCE o, PVOID p, PVOID *c) {
+  (void)o; (void)p; (void)c;
+  InitializeCriticalSection(&g_cblock);
+  return TRUE;
+}
+static ccallback **g_cbs;            /* подписки на колбэки */
+static int g_ncbs, g_capcbs;
+typedef struct { ccallback *cb; uint64_t call; } pending_t;
+static pending_t *g_calls;           /* ожидающие call result */
+static int g_ncalls, g_capcalls;
+static bool g_dispatch_wanted, g_dispatch_on;
+
+static void cb_lock(void) { InitOnceExecuteOnce(&g_cbonce, init_cblock, NULL, NULL); EnterCriticalSection(&g_cblock); }
+static void cb_unlock(void) { LeaveCriticalSection(&g_cblock); }
+
+EXPORT void SteamAPI_RegisterCallback(ccallback *cb, int32_t icb) {
+  cb_lock();
+  cb->icb = icb;
+  cb->flags |= CB_REGISTERED;
+  if (g_ncbs == g_capcbs) {
+    g_capcbs = g_capcbs ? g_capcbs * 2 : 64;
+    g_cbs = (ccallback **)realloc(g_cbs, sizeof *g_cbs * (size_t)g_capcbs);
+  }
+  g_cbs[g_ncbs++] = cb;
+  g_dispatch_wanted = true;
+  cb_unlock();
+}
+
+EXPORT void SteamAPI_UnregisterCallback(ccallback *cb) {
+  cb_lock();
+  cb->flags &= (uint8_t)~CB_REGISTERED;
+  for (int i = 0; i < g_ncbs; i++)
+    if (g_cbs[i] == cb) { g_cbs[i] = g_cbs[--g_ncbs]; break; }
+  cb_unlock();
+}
+
+EXPORT void SteamAPI_RegisterCallResult(ccallback *cb, uint64_t call) {
+  if (!call) return;
+  cb_lock();
+  cb->flags |= CB_REGISTERED;
+  if (g_ncalls == g_capcalls) {
+    g_capcalls = g_capcalls ? g_capcalls * 2 : 64;
+    g_calls = (pending_t *)realloc(g_calls, sizeof *g_calls * (size_t)g_capcalls);
+  }
+  g_calls[g_ncalls++] = (pending_t){cb, call};
+  g_dispatch_wanted = true;
+  cb_unlock();
+}
+
+EXPORT void SteamAPI_UnregisterCallResult(ccallback *cb, uint64_t call) {
+  cb_lock();
+  for (int i = 0; i < g_ncalls; i++)
+    if (g_calls[i].cb == cb && g_calls[i].call == call) { g_calls[i] = g_calls[--g_ncalls]; break; }
+  cb->flags &= (uint8_t)~CB_REGISTERED;
+  cb_unlock();
+}
+
+static bool take_call(uint64_t call, ccallback **out) {
+  bool found = false;
+  cb_lock();
+  for (int i = 0; i < g_ncalls; i++)
+    if (g_calls[i].call == call) {
+      *out = g_calls[i].cb;
+      g_calls[i] = g_calls[--g_ncalls];
+      (*out)->flags &= (uint8_t)~CB_REGISTERED;
+      found = true;
+      break;
+    }
+  cb_unlock();
+  return found;
+}
+
+static void dispatch_callback(int32_t id, void *param) {
+  /* Снимок: обработчик может подписаться или отписаться прямо во время вызова. */
+  cb_lock();
+  int n = 0;
+  ccallback **snap = (ccallback **)malloc(sizeof *snap * (size_t)(g_ncbs ? g_ncbs : 1));
+  for (int i = 0; i < g_ncbs; i++)
+    if (g_cbs[i]->icb == id && !(g_cbs[i]->flags & CB_GAMESERVER)) snap[n++] = g_cbs[i];
+  cb_unlock();
+  for (int i = 0; i < n; i++) {
+    bool still = false;
+    cb_lock();
+    for (int k = 0; k < g_ncbs && !still; k++) still = g_cbs[k] == snap[i];
+    cb_unlock();
+    if (still) ((run1_fn)snap[i]->vtbl[1])(snap[i], param);
+  }
+  free(snap);
+}
+
+EXPORT void SteamAPI_RunCallbacks(void) {
+  static bool running;
+  if (!g_dispatch_wanted) { simple(CORE_RUN_CALLBACKS, false, 0); return; }
+  if (running) return;
+  running = true;
+  if (!g_dispatch_on) { SteamAPI_ManualDispatch_Init(); g_dispatch_on = true; }
+  if (!g_pipe) g_pipe = SteamAPI_GetHSteamPipe();
+  SteamAPI_ManualDispatch_RunFrame(g_pipe);
+  CallbackMsg_t m;
+  while (SteamAPI_ManualDispatch_GetNextCallback(g_pipe, &m)) {
+    if (m.id == 703 && m.size >= 16) {
+      /* SteamAPICallCompleted_t: uint64 call, int iCallback, uint32 cubParam. */
+      uint64_t call;
+      memcpy(&call, m.param, 8);
+      ccallback *cb;
+      if (take_call(call, &cb)) {
+        int size = ((size_fn)cb->vtbl[2])(cb);
+        void *buf = calloc(1, size > 0 ? (size_t)size : 1);
+        bool failed = true;
+        bool ok = SteamAPI_ManualDispatch_GetAPICallResult(g_pipe, call, buf, size, cb->icb, &failed);
+        ((run3_fn)cb->vtbl[0])(cb, buf, failed || !ok, call);
+        free(buf);
+      }
+    }
+    dispatch_callback(m.id, m.param);
+    SteamAPI_ManualDispatch_FreeLastCallback(g_pipe);
+  }
+  running = false;
 }

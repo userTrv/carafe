@@ -23,7 +23,12 @@ CORE = {
     "SteamAPI_ManualDispatch_Init", "SteamAPI_ManualDispatch_RunFrame",
     "SteamAPI_ManualDispatch_GetNextCallback", "SteamAPI_ManualDispatch_FreeLastCallback",
     "SteamAPI_ManualDispatch_GetAPICallResult", "SteamAPI_ISteamUtils_GetAPICallResult",
+    "SteamInternal_ContextInit", "SteamAPI_RegisterCallback", "SteamAPI_UnregisterCallback",
+    "SteamAPI_RegisterCallResult", "SteamAPI_UnregisterCallResult",
 }
+
+# Ручные функции ядра, которые одновременно методы интерфейсов: в vtable ставятся как есть.
+CORE_METHODS = {"SteamAPI_ISteamUtils_GetAPICallResult"}
 
 # Экспорты вне steam_api.json: через них Steamworks.NET получает ISteamClient после init.
 EXTRA_FNS = {
@@ -63,8 +68,14 @@ class Unsupported(Exception):
     pass
 
 
-def pe_exports(path):
-    """Имена экспортов PE-файла (x64)."""
+def dll_versions(path):
+    """Строки версий интерфейсов, зашитые в DLL игры (SteamClient021, SteamUser023…)."""
+    b = Path(path).read_bytes()
+    return {m.decode() for m in re.findall(rb"(?<![A-Za-z0-9_])([A-Za-z_]*(?:Steam|STEAM)[A-Za-z_]*?[0-9]{3})\x00", b)}
+
+
+def pe_export_offsets(path):
+    """Экспорты PE-файла (x64): имя → смещение кода в файле (None — форвард или не код)."""
     b = Path(path).read_bytes()
     pe = struct.unpack_from("<I", b, 0x3C)[0]
     nsec = struct.unpack_from("<H", b, pe + 6)[0]
@@ -80,11 +91,96 @@ def pe_exports(path):
         raise ValueError(rva)
 
     e = off(exp_rva)
-    n_names, names_rva = struct.unpack_from("<I", b, e + 24)[0], struct.unpack_from("<I", b, e + 32)[0]
-    out = []
+    funcs_rva, names_rva, ords_rva = struct.unpack_from("<III", b, e + 28)
+    n_names = struct.unpack_from("<I", b, e + 24)[0]
+    out = {}
     for i in range(n_names):
         s = off(struct.unpack_from("<I", b, off(names_rva) + 4 * i)[0])
-        out.append(b[s:b.index(b"\0", s)].decode())
+        ordinal = struct.unpack_from("<H", b, off(ords_rva) + 2 * i)[0]
+        rva = struct.unpack_from("<I", b, off(funcs_rva) + 4 * ordinal)[0]
+        try:
+            out[b[s:b.index(b"\0", s)].decode()] = off(rva)
+        except ValueError:
+            out[b[s:b.index(b"\0", s)].decode()] = None
+    return out
+
+
+def pe_exports(path):
+    return list(pe_export_offsets(path))
+
+
+def vtable_slot(code):
+    """Слот vtable, через который flat-обёртка зовёт метод: mov reg,[rcx], затем
+    call/jmp [reg+disp] или mov r,[reg+disp] … jmp r. Так компилирует обёртки сам SDK,
+    поэтому номер слота — ровно тот, что у игры. Не узнали — None."""
+    reg = None
+    i = 0
+    while i < len(code) - 3:
+        if reg is not None and code[i] in (0xC3, 0xCC):
+            return None                       # ret или выравнивание: дальше чужой код
+        rex = code[i] if 0x40 <= code[i] <= 0x4F else 0
+        j = i + 1 if rex else i
+        op, modrm = code[j], code[j + 1]
+        mod, r, rm = modrm >> 6, (modrm >> 3) & 7, modrm & 7
+        if reg is None and rex & 8 and op == 0x8B and mod == 0 and rm == 1 and not rex & 1:
+            reg = r | ((rex & 4) << 1)        # mov reg, [rcx]: в reg — vtable
+            i = j + 2
+            continue
+        base_ok = reg is not None and rm == (reg & 7) and bool(rex & 1) == bool(reg & 8) and rm not in (4, 5)
+        if base_ok and mod in (0, 1, 2) and ((op == 0xFF and r in (2, 4)) or (op == 0x8B and rex & 8)):
+            disp = 0 if mod == 0 else struct.unpack_from("<b" if mod == 1 else "<i", code, j + 2)[0]
+            return disp // 8 if disp >= 0 and disp % 8 == 0 else None
+        i += 1
+    return None
+
+
+def vtable_slots(api, dll_path):
+    """{класс: {слот: метод из json}} по коду flat-обёрток в DLL игры. Слоты без метода —
+    приватные методы SDK (STEAM_PRIVATE_API): в json их нет, а место в vtable они занимают."""
+    data = Path(dll_path).read_bytes()
+    offs = pe_export_offsets(dll_path)
+    out = {}
+    for i in api["interfaces"]:
+        found = []
+        for m in i["methods"]:
+            o = offs.get(m["methodname_flat"])
+            k = vtable_slot(data[o:o + 96]) if o is not None else None
+            if k is not None:
+                found.append((k, m))
+        # Проверка разбора: слоты не повторяются и растут в порядке объявления (кроме перегрузок,
+        # которые MSVC разворачивает). Сомнительное не берём: лучше заглушка, чем чужой метод.
+        count = {}
+        for k, _ in found:
+            count[k] = count.get(k, 0) + 1
+        found = [(k, m) for k, m in found if count[k] == 1]
+        slots, prev = {}, -1
+        names = [m["methodname"] for m in i["methods"]]
+        for k, m in found:
+            overloaded = names.count(m["methodname"]) > 1
+            if k > prev or overloaded:
+                slots[k] = m
+                if not overloaded:
+                    prev = k
+        if slots:
+            out[i["classname"]] = slots
+    return out
+
+
+def decl_order(slots):
+    """Порядок объявления по слотам MSVC: перегрузки у MSVC стоят вместе в обратном порядке,
+    дыры — приватные методы. Обратная операция к раскладке компилятора (проверяет vt_check.py)."""
+    seq = [slots.get(k) for k in range(max(slots) + 1)]
+    out, k = [], 0
+    while k < len(seq):
+        if seq[k] is None:
+            out.append(None)
+            k += 1
+            continue
+        e = k
+        while e + 1 < len(seq) and seq[e + 1] and seq[e + 1]["methodname"] == seq[k]["methodname"]:
+            e += 1
+        out += reversed(seq[k:e + 1])
+        k = e + 1
     return out
 
 
@@ -291,10 +387,13 @@ def count_expr(ref):
     return f"({name} ? (uint32_t)*{name} : 0u)" if is_ptr else f"(uint32_t)({name})"
 
 
-def gen_shim(fid, name, params, ret):
+def gen_shim(fid, name, params, ret, wrap=None):
     sig = ", ".join(f"{ct} {n}" for _, n, ct, _ in params) or "void"
     rtype = ret[1]
-    L = [f"EXPORT {rtype} {name}({sig}) {{", f"  bw w; bw_begin(&w, {fid});"]
+    L = [f"EXPORT {rtype} {name}({sig}) {{"]
+    if params and params[0][1] == "self":
+        L.append("  self = bridge_unwrap(self);")
+    L.append(f"  bw w; bw_begin(&w, {fid});")
     for kind, n, ct, x in params:
         if kind == "scalar":
             L.append(f"  bw_u64(&w, {enc(x, n)});")
@@ -322,6 +421,8 @@ def gen_shim(fid, name, params, ret):
         elif kind == "struct" and not x[1]:
             L.append(f"  if ({n}) br_copy(&r, {n});")
     L.append("  bridge_done(&r);")
+    if wrap:
+        L.append(f"  ret = {wrap};")
     if ret[0] != "void":
         L.append("  return ret;")
     L.append("}")
@@ -391,6 +492,66 @@ def gen_helper(fid, name, params, ret):
     return "\n".join(L)
 
 
+def wrap_expr(fn, ifidx):
+    """Интерфейс в результате → объект с vtable для C++-игр (flat-вызовы его разворачивают)."""
+    rt = fn.get("returntype", "").strip()
+    pnames = {p["paramname"] for p in fn["params"]}
+    ver = "a_pchVersion" if "pchVersion" in pnames else "a_ver" if "ver" in pnames else "NULL"
+    base = rt.rstrip("*").strip()
+    if rt.endswith("*") and base in ifidx:
+        return f"bridge_wrap(ret, {ifidx[base]}, {ver})"
+    if rt == "void *" and ver != "NULL":
+        return f"bridge_wrap(ret, -1, {ver})"
+    return None
+
+
+def gen_vtables(model, ifaces, sigs, vslots):
+    """vtable каждого интерфейса по слотам из DLL игры. Слот — сама flat-функция (this == self),
+    кроме методов, возвращающих структуру: MSVC отдаёт её через скрытый указатель."""
+    L, descs = [], []
+    for k, (i, ver) in enumerate(ifaces):
+        if i["classname"] not in vslots:
+            # Слоты не восстановлены: объект не создаём, flat-вызовы получат указатель как есть.
+            descs.append(f'  {{"{i["classname"]}", "{ver}", NULL}},')
+            continue
+        table = vslots[i["classname"]]
+        slots = []
+        for n in range(max(table) + 1):
+            m = table.get(n)
+            if m is None:
+                L.append(f'static uint64_t VTS_{k}_{n}(void) {{ bridge_unsupported("{i["classname"]}: приватный слот {n}"); return 0; }}')
+                slots.append(f"VTS_{k}_{n}")
+                continue
+            flat, rt = m["methodname_flat"], m["returntype"].strip()
+            sret = rt in ("CSteamID", "CGameID") or rt in model.structs
+            if flat in CORE_METHODS and not sret:
+                slots.append(flat)
+            elif flat in sigs and not sret:
+                slots.append(flat)
+            elif flat in sigs and rt in ("CSteamID", "CGameID"):
+                params, ret = sigs[flat]
+                rest = ", ".join(f"{ct} {pn}" for _, pn, ct, _ in params[1:])
+                args = ", ".join(pn for _, pn, _, _ in params)
+                L.append(f"static uint64_t *VT_{flat}(void *self, uint64_t *sret{', ' + rest if rest else ''}) {{"
+                         f" *sret = {flat}({args}); return sret; }}")
+                slots.append(f"VT_{flat}")
+            elif sret:
+                size = model.layout(rt, 8)["size"]
+                L.append(f'static void *VTS_{k}_{n}(void *self, void *sret) {{ (void)self;'
+                         f' bridge_unsupported("{flat}"); memset(sret, 0, {size}); return sret; }}')
+                slots.append(f"VTS_{k}_{n}")
+            else:
+                L.append(f'static uint64_t VTS_{k}_{n}(void) {{ bridge_unsupported("{flat}"); return 0; }}')
+                slots.append(f"VTS_{k}_{n}")
+        L.append(f"static void *const VT_{k}[] = {{" + ", ".join(f"(void *)&{x}" for x in slots) + "};")
+        descs.append(f'  {{"{i["classname"]}", "{ver}", VT_{k}}},')
+    L.append("const iface_desc_t IFACES[] = {")
+    L += descs
+    L.append("};")
+    L.append(f"const int N_IFACES = {len(ifaces)};")
+    return "\n".join(L)
+
+
 def proto(name, params, ret):
     sig = ", ".join(ct for _, _, ct, _ in params) or "void"
     return f"extern {ret[1]} {name}({sig});"
@@ -402,6 +563,19 @@ def main(api_path, dll_path, out):
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     exports = pe_exports(dll_path)
+    versions = dll_versions(dll_path)
+    vslots = vtable_slots(api, dll_path)
+
+    # Интерфейсы, которые игра может получить объектом с vtable: версия из json или из DLL.
+    ifaces = []
+    for i in api["interfaces"]:
+        ver = i.get("version_string")
+        if not ver and i["classname"] == "ISteamClient":
+            # В DLL лежат и старые версии, которые она тоже умеет; заголовкам SDK соответствует новейшая.
+            ver = max((v for v in versions if re.fullmatch(r"SteamClient\d{3}", v)), default=None)
+        if ver:
+            ifaces.append((i, ver))
+    ifidx = {i["classname"]: k for k, (i, _) in enumerate(ifaces)}
 
     fns = dict(EXTRA_FNS)
     for i in api["interfaces"]:
@@ -422,7 +596,7 @@ def main(api_path, dll_path, out):
         cb = next((c.get("callback_id") for c in api["callback_structs"] if c["struct"] == n), -1)
         layouts.append((n, cb, wsize, msize, leaves))
 
-    shim, helper, protos, names, stubs = [], [], [], {}, []
+    shim, helper, protos, names, stubs, sigs = [], [], [], {}, [], {}
     fid = GEN_BASE
     unsupported = {}
     for name in exports:
@@ -438,7 +612,8 @@ def main(api_path, dll_path, out):
             unsupported[name] = str(e)
             stubs.append(name)
             continue
-        shim.append(gen_shim(fid, name, params, ret))
+        shim.append(gen_shim(fid, name, params, ret, wrap_expr(fn, ifidx)))
+        sigs[name] = (params, ret)
         helper.append(gen_helper(fid, name, params, ret))
         protos.append(proto(name, params, ret))
         names[fid] = name
@@ -446,6 +621,7 @@ def main(api_path, dll_path, out):
 
     for name in stubs:
         shim.append(f'EXPORT uint64_t {name}(void) {{ bridge_unsupported("{name}"); return 0; }}')
+    shim.append(gen_vtables(model, ifaces, sigs, vslots))
 
     L = ["/* сгенерировано gen.py — не править */", "#pragma once", "#include <stdint.h>",
          "typedef struct { uint32_t woff, moff, size; uint8_t zero; } leaf_t;",
@@ -471,7 +647,9 @@ def main(api_path, dll_path, out):
         + "int gen_dispatch(uint32_t id, br *r, bw *w) {\n  switch (id) {\n"
         + "\n".join(helper) + "\n  default: return 0;\n  }\n}\n")
     print(f"exports {len(exports)}: bridged {len(names)}, core {len(CORE & set(exports))}, "
-          f"stubs {len(stubs)} (unsupported {len(unsupported)}), layouts {len(layouts)}", file=sys.stderr)
+          f"stubs {len(stubs)} (unsupported {len(unsupported)}), layouts {len(layouts)}, "
+          f"vtables {sum(i['classname'] in vslots for i, _ in ifaces)} of {len(ifaces)} "
+          f"({sum(len(v) for v in vslots.values())} slots)", file=sys.stderr)
     (out / "unsupported.txt").write_text("".join(f"{k}\t{v}\n" for k, v in sorted(unsupported.items())))
 
 

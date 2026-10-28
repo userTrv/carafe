@@ -20,13 +20,12 @@ BRIDGES="$CARAFE_HOME/bridge"
 ZIG_VERSION="0.17.0"
 ZIG_URL="https://ziglang.org/download/$ZIG_VERSION/zig-aarch64-macos-$ZIG_VERSION.tar.xz"
 ZIG_SHA256="b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a"
-# sha256 Windows steam_api64.dll → "коммит Steamworks.NET  sha256 его libsteam_api.dylib".
+# SDK Steamworks (каталог bridge/sdk/<версия> с его steam_api.json) → "коммит Steamworks.NET
+# с libsteam_api.dylib того же SDK  sha256 этого dylib". SDK игры узнаёт bridge/sdk_detect.py.
 # Функция, а не ассоциативный массив: в macOS bash 3.2.
 steamapi_mac() {
   case "$1" in
-    # Steamworks.NET 2024.8.0, SDK 1.60 (Megabonk)
-    1add7f151fa644870a735ae86e68d1f019f296130d8e7c0a7ed3ecc7482dccbc)
-      echo "a2fc889ab2672981ec3e6225d551d86ce6923121 025a42fe02a40411429bc6afa7ff0092547408b03bf57d89da68413faed80176" ;;
+    1.60) echo "a2fc889ab2672981ec3e6225d551d86ce6923121 025a42fe02a40411429bc6afa7ff0092547408b03bf57d89da68413faed80176" ;;  # Steamworks.NET 2024.8.0
   esac
 }
 
@@ -219,9 +218,12 @@ cmd_bridge_build() {
   pair="$(steam_api_orig "$GAMES/$appid")" || die "в игре нет steam_api64.dll — мост не нужен"
   live="${pair%%|*}" orig="${pair##*|}"
   sha="$(shasum -a 256 "$orig" | cut -d' ' -f1)"
-  entry="$(steamapi_mac "$sha")"
-  [[ -n "$entry" ]] || die "неизвестная версия steam_api64.dll ($sha) — добавь пару в steamapi_mac"
+  local sdk; sdk="$(python3 -I "$CARAFE_SRC/bridge/sdk_detect.py" "$orig" "$CARAFE_SRC/bridge/sdk")" \
+    || die "мост для этого SDK пока не собрать: нужен его steam_api.json в bridge/sdk/ и строка в steamapi_mac"
+  entry="$(steamapi_mac "$sdk")"
+  [[ -n "$entry" ]] || die "SDK $sdk: нет libsteam_api.dylib в steamapi_mac"
   commit="${entry% *}" dsha="${entry#* }"
+  log "SDK Steamworks игры: $sdk"
   local out="$BRIDGES/$sha" dylib="$BRIDGES/$sha/src/libsteam_api.dylib"
   mkdir -p "$out/src"
   if [[ ! -f "$dylib" ]]; then
@@ -231,7 +233,8 @@ cmd_bridge_build() {
       "https://api.github.com/repos/rlabrecque/Steamworks.NET/contents/com.rlabrecque.steamworks.net/Plugins/steam_api.bundle/Contents/MacOS/libsteam_api.dylib?ref=$commit"
   fi
   echo "$dsha  $dylib" | shasum -a 256 -c - >/dev/null || { rm -f "$dylib"; die "sha256 libsteam_api.dylib не совпал"; }
-  ZIG="$(ensure_zig)" "$CARAFE_SRC/bridge/build.sh" "$orig" "$dylib" "$out"
+  ZIG="$(ensure_zig)" "$CARAFE_SRC/bridge/build.sh" "$orig" "$dylib" "$CARAFE_SRC/bridge/sdk/$sdk/steam_api.json" "$out"
+  echo "$sdk" > "$out/sdk"
   xattr -dr com.apple.quarantine "$out" 2>/dev/null || true
   log "мост готов: $out"
 }
@@ -283,19 +286,30 @@ cmd_bridge_test() {
   local b="$BRIDGES/$sha" t="$BRIDGES/$sha/test"
   [[ -x "$b/carafe-steamd" ]] || die "мост не собран: carafe bridge build $appid"
   mkdir -p "$t"
-  local zig; zig="$(ensure_zig)"
-  clang -O1 -Wall -o "$t/steamtest" "$CARAFE_SRC/bridge/test/steamtest.c"
-  "$zig" cc -target x86_64-windows-gnu -O1 -Wall -o "$t/steamtest.exe" "$CARAFE_SRC/bridge/test/steamtest.c"
+  local zig src="$CARAFE_SRC/bridge/test"
+  zig="$(ensure_zig)"
+  # C++-часть: заголовок по слотам DLL игры; под Mac — Itanium ABI, под Windows — ABI MSVC, как у игр.
+  python3 -I "$src/gen_header.py" "$CARAFE_SRC/bridge/sdk/$(cat "$b/sdk")/steam_api.json" "${pair##*|}" "$t/steam_iface.hpp"
+  clang++ -std=c++17 -O1 -fno-exceptions -fno-rtti -I"$t" -c -o "$t/cpptest.o" "$src/cpptest.cpp"
+  clang -O1 -Wall -c -o "$t/steamtest.o" "$src/steamtest.c"
+  clang++ -o "$t/steamtest" "$t/steamtest.o" "$t/cpptest.o"
+  clang -target x86_64-pc-windows-msvc -std=c++17 -O1 -fno-exceptions -fno-rtti -fno-autolink -fno-stack-protector \
+    -x c++ -I"$t" -c -o "$t/cpptest.obj" "$src/cpptest.cpp"
+  "$zig" cc -target x86_64-windows-gnu -O1 -Wall -o "$t/steamtest.exe" "$src/steamtest.c" "$t/cpptest.obj"
   cp "$b/steam_api64.dll" "$t/steam_api64.dll"
 
-  # Шум libsteam_api и CRLF из Windows-сборки в сравнение не идут.
-  local clean='/^\[S_API|minidump|SteamInternal_Set/d; s/\r$//'
-  log "нативно (libsteam_api.dylib)"
-  (cd "$t" && SteamAppId=480 ./steamtest "$b/libsteam_api.dylib" 2>&1) | sed -E "$clean" > "$t/native.txt" || true
-  log "под Wine через мост"
-  start_steamd "$b" 480
-  ( cmd_run "$t/steamtest.exe" ) 2>&1 | sed -E "$clean" > "$t/bridged.txt" || true
-  wait "$STEAMD_PID" 2>/dev/null || true
+  # В сравнение идут только строки теста: шум libsteam_api и Wine, CRLF Windows-сборки — мимо.
+  local clean='s/\r$//; /^(#|[A-Za-z0-9_.]+ = )/!d' mode
+  : > "$t/native.txt"
+  : > "$t/bridged.txt"
+  for mode in flat cpp; do
+    log "$mode: нативно (libsteam_api.dylib)"
+    (cd "$t" && SteamAppId=480 ./steamtest "$b/libsteam_api.dylib" "$mode" 2>&1) | sed -E "$clean" >> "$t/native.txt" || true
+    log "$mode: под Wine через мост"
+    start_steamd "$b" 480
+    ( cmd_run "$t/steamtest.exe" steam_api64.dll "$mode" ) 2>&1 | sed -E "$clean" >> "$t/bridged.txt" || true
+    wait "$STEAMD_PID" 2>/dev/null || true
+  done
 
   local fails; fails="$(cat "$t/native.txt" "$t/bridged.txt" | grep -c FAIL || true)"
   if diff <(grep -v '^#' "$t/native.txt") <(grep -v '^#' "$t/bridged.txt") > "$t/diff.txt" && [[ "$fails" == 0 ]] \

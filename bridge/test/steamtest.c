@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 
 #ifdef _WIN32
@@ -15,6 +16,8 @@ static HMODULE lib;
 static bool open_lib(const char *path) { return (lib = LoadLibraryA(path ? path : "steam_api64.dll")) != NULL; }
 static void *sym(const char *n) { return (void *)GetProcAddress(lib, n); }
 static void sleep_ms(int ms) { Sleep(ms); }
+/* Объект cpptest собран в ABI MSVC: компилятор ссылается на этот символ, если есть float. */
+int _fltused = 0;
 #pragma pack(push, 8)
 #else
 #include <dlfcn.h>
@@ -39,6 +42,15 @@ typedef struct { int32_t user; int32_t id; uint8_t *param; int32_t size; } Callb
 
 #define FNS(X)                                                                                   \
   X(int, SteamAPI_InitFlat, (char *))                                                            \
+  X(int32_t, SteamAPI_GetHSteamUser, (void))                                                     \
+  X(void, SteamAPI_RunCallbacks, (void))                                                         \
+  X(void *, SteamInternal_FindOrCreateUserInterface, (int32_t, const char *))                    \
+  X(void *, SteamInternal_CreateInterface, (const char *))                                       \
+  X(void *, SteamInternal_ContextInit, (void *))                                                 \
+  X(void, SteamAPI_RegisterCallback, (void *, int))                                              \
+  X(void, SteamAPI_UnregisterCallback, (void *))                                                 \
+  X(void, SteamAPI_RegisterCallResult, (void *, uint64_t))                                       \
+  X(void, SteamAPI_UnregisterCallResult, (void *, uint64_t))                                     \
   X(void, SteamAPI_Shutdown, (void))                                                             \
   X(int32_t, SteamAPI_GetHSteamPipe, (void))                                                     \
   X(void, SteamAPI_ManualDispatch_Init, (void))                                                  \
@@ -166,14 +178,35 @@ static void forget_cb(int32_t id) {
 /* Серверное состояние своего пользователя: RequestUserStats обходит локальный кэш клиента. */
 static bool server_stats(uint64_t me) {
   UserStatsReceived_t r = {0};
-  return wait_call_utils(SteamAPI_ISteamUserStats_RequestUserStats(stats, me), &r, sizeof r, 1101) && r.result == 1;
+  bool got = wait_call_utils(SteamAPI_ISteamUserStats_RequestUserStats(stats, me), &r, sizeof r, 1101);
+  if (!got || r.result != 1) SAY("# RequestUserStats: %s, EResult %d", got ? "ответ" : "нет ответа", r.result);
+  return got && r.result == 1;
+}
+
+/* Steam ограничивает частоту записи статов, поэтому до трёх попыток с паузой. */
+/* Сервер Steam иногда отвечает старым значением сразу после записи: читаем несколько раз. */
+static bool server_ach(uint64_t me, const char *ach, bool want) {
+  for (int attempt = 1; attempt <= 5; attempt++) {
+    bool v = !want;
+    if (server_stats(me) && SteamAPI_ISteamUserStats_GetUserAchievement(stats, me, ach, &v) && v == want) {
+      if (attempt > 1) SAY("# %s на сервере обновилась с попытки %d", ach, attempt);
+      return true;
+    }
+    sleep_ms(1500);
+  }
+  return false;
 }
 
 static bool store(void) {
-  forget_cb(1102);
-  if (!SteamAPI_ISteamUserStats_StoreStats(stats)) return false;
-  UserStatsStored_t *s = (UserStatsStored_t *)wait_cb(1102);
-  return s && s->result == 1;
+  for (int attempt = 0; attempt < 3; attempt++) {
+    if (attempt) sleep_ms(2000);
+    forget_cb(1102);
+    if (!SteamAPI_ISteamUserStats_StoreStats(stats)) continue;
+    UserStatsStored_t *s = (UserStatsStored_t *)wait_cb(1102);
+    if (s && s->result == 1) return true;
+    SAY("# StoreStats: %s, EResult %d", s ? "ответ" : "нет ответа", s ? s->result : 0);
+  }
+  return false;
 }
 
 static void test_identity(uint64_t *me) {
@@ -222,13 +255,11 @@ static void test_stats(uint64_t me) {
   if (ach && SteamAPI_ISteamUserStats_GetAchievement(stats, ach, &was)) {
     SAY("# %s сейчас %s", ach, was ? "получена" : "не получена");
     bool flip = was ? SteamAPI_ISteamUserStats_ClearAchievement(stats, ach) : SteamAPI_ISteamUserStats_SetAchievement(stats, ach);
-    bool srv = !was;
     CHECK("stats.ach_flip.stored", flip && store());
-    CHECK("stats.ach_flip.on_server", server_stats(me) && SteamAPI_ISteamUserStats_GetUserAchievement(stats, me, ach, &srv) && srv == !was);
+    CHECK("stats.ach_flip.on_server", server_ach(me, ach, !was));
     bool back = was ? SteamAPI_ISteamUserStats_SetAchievement(stats, ach) : SteamAPI_ISteamUserStats_ClearAchievement(stats, ach);
-    srv = !was;
     CHECK("stats.ach_restore.stored", back && store());
-    CHECK("stats.ach_restore.on_server", server_stats(me) && SteamAPI_ISteamUserStats_GetUserAchievement(stats, me, ach, &srv) && srv == was);
+    CHECK("stats.ach_restore.on_server", server_ach(me, ach, was));
   } else {
     CHECK("stats.ach_read", false);
   }
@@ -283,6 +314,36 @@ static void test_cloud(void) {
   CHECK("cloud.delete", SteamAPI_ISteamRemoteStorage_FileDelete(storage, file) && !SteamAPI_ISteamRemoteStorage_FileExists(storage, file));
 }
 
+/* C++-часть (cpptest.cpp): всё внешнее — через эту таблицу, без CRT. */
+struct cpp_api {
+  void *(*FindOrCreateUserInterface)(int32_t, const char *);
+  void *(*CreateInterface)(const char *);
+  void *(*ContextInit)(void *);
+  int32_t (*GetHSteamUser)(void);
+  int32_t (*GetHSteamPipe)(void);
+  void (*RunCallbacks)(void);
+  void (*RegisterCallback)(void *, int);
+  void (*UnregisterCallback)(void *);
+  void (*RegisterCallResult)(void *, uint64_t);
+  void (*UnregisterCallResult)(void *, uint64_t);
+  void (*check)(const char *key, bool ok);
+  void (*say)(const char *fmt, ...);
+  void (*sleep_ms)(int);
+  uint32_t (*hash)(const void *p, uint32_t n);
+};
+int cpp_tests(const struct cpp_api *api);
+
+static void cpp_check(const char *key, bool ok) { CHECK(key, ok); }
+static void cpp_say(const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  vprintf(fmt, ap);
+  va_end(ap);
+  putchar('\n');
+  fflush(stdout);
+}
+static uint32_t cpp_hash(const void *p, uint32_t n) { return fnv(p, n); }
+
 int main(int argc, char **argv) {
   setvbuf(stdout, NULL, _IONBF, 0);
   if (!open_lib(argc > 1 ? argv[1] : NULL)) { SAY("load = FAIL"); return 2; }
@@ -294,6 +355,18 @@ int main(int argc, char **argv) {
   int init = SteamAPI_InitFlat(err);
   SAY("init = %d", init);
   if (init != 0) { SAY("# %s", err); return 1; }
+  if (argc > 2 && !strcmp(argv[2], "cpp")) {
+    struct cpp_api api = {
+      SteamInternal_FindOrCreateUserInterface, SteamInternal_CreateInterface, SteamInternal_ContextInit,
+      SteamAPI_GetHSteamUser, SteamAPI_GetHSteamPipe, SteamAPI_RunCallbacks,
+      SteamAPI_RegisterCallback, SteamAPI_UnregisterCallback, SteamAPI_RegisterCallResult,
+      SteamAPI_UnregisterCallResult, cpp_check, cpp_say, sleep_ms, cpp_hash,
+    };
+    if (cpp_tests(&api)) failures++;
+    SteamAPI_Shutdown();
+    SAY("# провалов: %d", failures);
+    return failures ? 1 : 0;
+  }
   SteamAPI_ManualDispatch_Init();
   pipe_ = SteamAPI_GetHSteamPipe();
   user = SteamAPI_SteamUser_v023();
