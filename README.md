@@ -26,6 +26,12 @@ bin/carafe game run <appid>
 bin/carafe game import <appid>
 ```
 
+## Ограничения
+
+Steam внутри префикса не запущен, поэтому `SteamAPI_Init()` у игры не проходит: нет облака и ачивок. Сейвы из Steam Cloud можно забрать вручную со страницы `https://store.steampowered.com/account/remotestorageapp/?appid=<appid>` и положить в папку игры в префиксе (у Unity-игр — `drive_c/users/crossover/AppData/LocalLow/...`). Обратно в облако прогресс сам не уходит.
+
+`carafe game run` применяет обходы для старого Wine 7.7 из GPTK: подставляет `api-ms-win-core-winrt-robuffer` для IL2CPP и убирает плагин Rewired для Windows.Gaming.Input в `.carafe-disabled/`.
+
 Переменные окружения:
 
 | Переменная      | Что делает                                  |
