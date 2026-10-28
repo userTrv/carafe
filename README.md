@@ -26,9 +26,28 @@ bin/carafe game run <appid>
 bin/carafe game import <appid>
 ```
 
+## Мост в Steam для Mac
+
+```bash
+bin/carafe bridge build <appid>
+```
+
+После этого `game run` подменяет `steam_api64.dll` игры заглушкой, которая передаёт вызовы Steamworks нативному `carafe-steamd`, а тот говорит с запущенным Steam для Mac от имени игры. Работают лидерборды, ники и аватары, статы и ачивки (Steam для Mac должен быть запущен).
+
+Как устроено:
+
+- `bridge/gen.py` генерирует обе стороны из `bridge/sdk/steam_api.json` (описание API из Steamworks.NET) и списка экспортов DLL игры. Колбэки и структуры перекладываются между pack 8 (Windows) и pack 4 (Mac).
+- Связь — TCP на 127.0.0.1 с одноразовым токеном; хелпер живёт, пока игра подключена. Лог вызовов: `~/Library/Application Support/carafe/bridge-<appid>.log`.
+- Mac-версия `libsteam_api.dylib` берётся из того же релиза Steamworks.NET, что у игры, по sha256 её `steam_api64.dll` (`steamapi_mac` в `bin/carafe`). Новая игра — новая строка в этой таблице.
+- Для сборки нужен zig — carafe скачает его сам в `~/Library/Application Support/carafe/toolchain`.
+
+`CARAFE_BRIDGE=0` запускает игру с оригинальной DLL.
+
 ## Ограничения
 
-Steam внутри префикса не запущен, поэтому `SteamAPI_Init()` у игры не проходит: нет облака и ачивок. Сейвы из Steam Cloud можно забрать вручную со страницы `https://store.steampowered.com/account/remotestorageapp/?appid=<appid>` и положить в папку игры в префиксе (у Unity-игр — `drive_c/users/crossover/AppData/LocalLow/...`). Обратно в облако прогресс сам не уходит.
+Steam Cloud не синхронизируется: Auto-Cloud с Windows-путями Steam для Mac не видит даже через мост. Сейвы можно забрать вручную со страницы `https://store.steampowered.com/account/remotestorageapp/?appid=<appid>` и положить в папку игры в префиксе (у Unity-игр — `drive_c/users/crossover/AppData/LocalLow/...`). С мостом игра видит Steam ID и пишет сейвы в папку под ним, а не в `0`.
+
+Без моста `SteamAPI_Init()` у игры не проходит: нет ни лидербордов, ни ачивок.
 
 `carafe game run` применяет обходы для старого Wine 7.7 из GPTK: подставляет `api-ms-win-core-winrt-robuffer` для IL2CPP и убирает плагин Rewired для Windows.Gaming.Input в `.carafe-disabled/`.
 
@@ -39,4 +58,5 @@ Steam внутри префикса не запущен, поэтому `SteamAP
 | `CARAFE_BOTTLE` | имя префикса Wine (по умолчанию `default`)  |
 | `CARAFE_EXE`    | exe игры, если автоопределение ошиблось     |
 | `CARAFE_HUD=1`  | Metal HUD с FPS                             |
+| `CARAFE_BRIDGE=0` | запуск без моста в Steam                  |
 | `WINEDEBUG`     | логи Wine (по умолчанию выключены)          |
