@@ -1,6 +1,7 @@
 /* carafe-steamd: нативный хелпер, через который Windows-игра под Wine говорит со Steam для Mac. */
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <signal.h>
@@ -30,6 +31,7 @@ extern bool SteamAPI_ISteamUtils_GetAPICallResult(void *self, uint64_t call, voi
 
 static FILE *g_log;
 static bool g_inited;
+static bool g_served;  /* игра хоть раз инициализировала Steam: её уход — конец работы */
 
 /* --- память запроса --- */
 static void *g_tmp[256];
@@ -110,7 +112,7 @@ static int core(uint32_t id, br *r, bw *w) {
     const char *versions = br_str(r);
     char err[1024] = {0};
     int32_t res = g_inited ? 0 : versions ? SteamInternal_SteamAPI_Init(versions, err) : SteamAPI_InitFlat(err);
-    if (res == 0) g_inited = true;
+    if (res == 0) g_inited = g_served = true;
     if (g_log) fprintf(g_log, "SteamAPI init: %d %s\n", res, err);
     bw_u64(w, (uint64_t)(int64_t)res);
     bw_str(w, err);
@@ -250,7 +252,9 @@ int main(int argc, char **argv) {
   fflush(stdout);
   /* Читатель порта уже ушёл: libsteam_api печатает в stdout, запись в закрытый канал убила бы процесс. */
   signal(SIGPIPE, SIG_IGN);
-  dup2(STDERR_FILENO, STDOUT_FILENO);
+  /* Болтовню libsteam_api (там и Steam ID) — в лог, а не в терминал. */
+  int quiet = g_log ? fileno(g_log) : open("/dev/null", O_WRONLY);
+  if (quiet >= 0) { dup2(quiet, STDOUT_FILENO); dup2(quiet, STDERR_FILENO); }
   /* Игра так и не подключилась — не висим вечно. */
   alarm(120);
 
@@ -262,7 +266,7 @@ int main(int argc, char **argv) {
     setsockopt(c, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
     serve(c, token);
     close(c);
-    if (g_inited) break;  /* игра была и ушла */
+    if (g_served) break;  /* игра была и ушла, даже если успела вызвать SteamAPI_Shutdown */
   }
   if (g_inited) SteamAPI_Shutdown();
   if (g_log) fclose(g_log);

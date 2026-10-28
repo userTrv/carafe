@@ -43,6 +43,7 @@ usage() {
   carafe game import APPID [DIR]   забрать depot, скачанный консолью Steam (download_depot)
   carafe game run APPID [ARGS...]  запустить игру (exe ищется в папке игры)
   carafe bridge build APPID        собрать мост в Steam для Mac (ачивки, лидерборды)
+  carafe bridge test APPID         проверить мост игры на Spacewar (480) против нативного Steam
   carafe cloud status|pull|push APPID  сейвы со Steam Cloud (game run делает pull/push сам)
   carafe run EXE [ARGS...]         запустить произвольный .exe в префиксе
   carafe wine [ARGS...]            вызвать wine с окружением префикса (winecfg и т. п.)
@@ -257,6 +258,55 @@ apply_bridge() {
   echo "$b"
 }
 
+# Хелпер моста: живёт, пока подключённая игра не уйдёт. SteamAppId говорит Steam, за какую игру он выступает.
+# Ставит CARAFE_BRIDGE_PORT/CARAFE_BRIDGE_TOKEN для заглушки и STEAMD_PID.
+start_steamd() {
+  local bridge="$1" appid="$2" fifo
+  fifo="$(mktemp -u "${TMPDIR:-/tmp}/carafe-steamd.XXXXXX")"
+  mkfifo "$fifo"
+  CARAFE_BRIDGE_TOKEN="$(head -c 32 /dev/urandom | xxd -p -c 64)"
+  export CARAFE_BRIDGE_TOKEN
+  CARAFE_BRIDGE_LOG="$CARAFE_HOME/bridge-$appid.log" SteamAppId="$appid" SteamGameId="$appid" \
+    "$bridge/carafe-steamd" > "$fifo" &
+  STEAMD_PID=$!
+  local port; read -r port < "$fifo"; rm -f "$fifo"
+  [[ "$port" =~ ^[0-9]+$ ]] || { kill "$STEAMD_PID" 2>/dev/null; die "carafe-steamd не запустился"; }
+  export CARAFE_BRIDGE_PORT="$port"
+  log "мост в Steam: порт $port, лог $CARAFE_HOME/bridge-$appid.log"
+}
+
+# Прогнать bridge/test/steamtest.c на Spacewar (480): нативно на Mac и под Wine через мост игры APPID.
+cmd_bridge_test() {
+  local appid="${1:?нужен APPID игры, чей мост проверяем}" pair sha
+  pair="$(steam_api_orig "$GAMES/$appid")" || die "в игре нет steam_api64.dll"
+  sha="$(shasum -a 256 "${pair##*|}" | cut -d' ' -f1)"
+  local b="$BRIDGES/$sha" t="$BRIDGES/$sha/test"
+  [[ -x "$b/carafe-steamd" ]] || die "мост не собран: carafe bridge build $appid"
+  mkdir -p "$t"
+  local zig; zig="$(ensure_zig)"
+  clang -O1 -Wall -o "$t/steamtest" "$CARAFE_SRC/bridge/test/steamtest.c"
+  "$zig" cc -target x86_64-windows-gnu -O1 -Wall -o "$t/steamtest.exe" "$CARAFE_SRC/bridge/test/steamtest.c"
+  cp "$b/steam_api64.dll" "$t/steam_api64.dll"
+
+  # Шум libsteam_api и CRLF из Windows-сборки в сравнение не идут.
+  local clean='/^\[S_API|minidump|SteamInternal_Set/d; s/\r$//'
+  log "нативно (libsteam_api.dylib)"
+  (cd "$t" && SteamAppId=480 ./steamtest "$b/libsteam_api.dylib" 2>&1) | sed -E "$clean" > "$t/native.txt" || true
+  log "под Wine через мост"
+  start_steamd "$b" 480
+  ( cmd_run "$t/steamtest.exe" ) 2>&1 | sed -E "$clean" > "$t/bridged.txt" || true
+  wait "$STEAMD_PID" 2>/dev/null || true
+
+  local fails; fails="$(cat "$t/native.txt" "$t/bridged.txt" | grep -c FAIL || true)"
+  if diff <(grep -v '^#' "$t/native.txt") <(grep -v '^#' "$t/bridged.txt") > "$t/diff.txt" && [[ "$fails" == 0 ]] \
+     && grep -q '^init = 0$' "$t/bridged.txt"; then
+    log "совпало, провалов нет ($(grep -vc '^#' "$t/bridged.txt") строк): $t"
+  else
+    cat "$t/diff.txt" >&2
+    die "мост расходится с нативным Steam или есть провалы: $t/{native,bridged,diff}.txt"
+  fi
+}
+
 # Правила Auto-Cloud игры (ufs/savefiles из appinfo) → строки ROOT:PATH:PATTERN:RECURSIVE.
 cloud_rules() {
   local appid="$1" cache="$GAMES/$1/.carafe-ufs"
@@ -320,24 +370,13 @@ cmd_game_run() {
     cloud=0
   fi
 
-  # Хелпер живёт, пока идёт игра: SteamAppId говорит Steam, за какую игру он выступает.
-  local fifo; fifo="$(mktemp -u "${TMPDIR:-/tmp}/carafe-steamd.XXXXXX")"
-  mkfifo "$fifo"
-  CARAFE_BRIDGE_TOKEN="$(head -c 32 /dev/urandom | xxd -p -c 64)"
-  export CARAFE_BRIDGE_TOKEN
-  CARAFE_BRIDGE_LOG="$CARAFE_HOME/bridge-$appid.log" SteamAppId="$appid" SteamGameId="$appid" \
-    "$bridge/carafe-steamd" > "$fifo" &
-  local steamd=$!
-  local port; read -r port < "$fifo"; rm -f "$fifo"
-  [[ "$port" =~ ^[0-9]+$ ]] || { kill "$steamd" 2>/dev/null; die "carafe-steamd не запустился"; }
-  export CARAFE_BRIDGE_PORT="$port"
-  log "мост в Steam: порт $port, лог $CARAFE_HOME/bridge-$appid.log"
+  start_steamd "$bridge" "$appid"
   log "запускаю $exe"
   local rc=0
   ( cmd_run "$exe" "$@" ) || rc=$?
   # Лаунчер wine может выйти раньше игры, поэтому хелпер не убиваем: он сам завершится,
   # когда игра закроет соединение (или через 2 минуты, если она так и не подключилась).
-  wait "$steamd" 2>/dev/null || true
+  wait "$STEAMD_PID" 2>/dev/null || true
   # Хелпер выходит, когда игра отключилась, — значит, сейвы уже на диске.
   if [[ "$cloud" == 1 ]]; then
     cloud_sync push "$appid" || log "Steam Cloud: выгрузка не удалась — повтори: carafe cloud push $appid"
@@ -362,7 +401,12 @@ case "${1:-}" in
       run) shift 2; cmd_game_run "$@" ;;
       *) usage; exit 1 ;;
     esac ;;
-  bridge) [[ "${2:-}" == build ]] || { usage; exit 1; }; cmd_bridge_build "${3:-}" ;;
+  bridge)
+    case "${2:-}" in
+      build) cmd_bridge_build "${3:-}" ;;
+      test) cmd_bridge_test "${3:-}" ;;
+      *) usage; exit 1 ;;
+    esac ;;
   cloud)
     case "${2:-}" in
       status|pull|push) cloud_sync "$2" "${3:?нужен APPID}" ;;

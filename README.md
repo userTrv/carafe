@@ -32,7 +32,7 @@ bin/carafe game import <appid>
 bin/carafe bridge build <appid>
 ```
 
-После этого `game run` подменяет `steam_api64.dll` игры заглушкой, которая передаёт вызовы Steamworks нативному `carafe-steamd`, а тот говорит с запущенным Steam для Mac от имени игры. Проверено на Megabonk: лидерборды с никами и аватарами, чтение статов и ачивок. Выдача новых ачивок и отправка результата в лидерборд пока не проверены. Steam для Mac должен быть запущен.
+После этого `game run` подменяет `steam_api64.dll` игры заглушкой, которая передаёт вызовы Steamworks нативному `carafe-steamd`, а тот говорит с запущенным Steam для Mac от имени игры. Проверено на Megabonk (лидерборды с никами и аватарами) и тестом на Spacewar (ниже): выдача и снятие ачивок, статы, отправка результата в лидерборд, Steam Cloud. Steam для Mac должен быть запущен.
 
 Как устроено:
 
@@ -42,6 +42,24 @@ bin/carafe bridge build <appid>
 - Для сборки нужен zig — carafe скачает его сам в `~/Library/Application Support/carafe/toolchain`.
 
 `CARAFE_BRIDGE=0` запускает игру с оригинальной DLL.
+
+### Проверка моста
+
+```bash
+bin/carafe bridge test <appid>
+```
+
+`bridge/test/steamtest.c` собирается дважды: под Mac (с настоящим `libsteam_api.dylib`) и под Windows (под Wine грузит заглушку моста). Обе сборки работают от имени Spacewar (appid 480, тестовое приложение Valve), и их вывод должен совпасть строка в строку:
+
+- ник, аватар, страна;
+- ачивка: выдать, проверить на сервере, вернуть как было;
+- стат: +1 к `NumGames`, проверить на сервере;
+- лидерборд: найти, отправить результат 1 с `KeepBest`, скачать свою запись с деталями;
+- Steam Cloud: записать, прочитать и удалить файл.
+
+Call result проверяются двумя путями: через ManualDispatch, как в Steamworks.NET, и через `ISteamUtils::GetAPICallResult`, как в C++-играх. Spacewar после теста остаётся в истории игр, а в его лидерборде — твоя запись с результатом 1.
+
+Ещё `build.sh` при каждой сборке сверяет раскладки структур, посчитанные `gen.py`, с компиляторами (`bridge/test/layout_check.py`): zig под Windows x64 и clang под Mac arm64 проверяют sizeof и offsetof всех 239 структур.
 
 ## Steam Cloud
 

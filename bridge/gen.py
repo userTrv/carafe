@@ -141,14 +141,16 @@ class Model:
     def layout(self, name, pack):
         key = (name, pack)
         if key not in self.layout_cache:
-            off, maxa, leaves = 0, 1, []
+            off, maxa, leaves, fields = 0, 1, [], []
             for f in self.structs[name]["fields"]:
                 size, align, fl = self.field_layout(f["fieldtype"], pack)
                 off = (off + align - 1) // align * align
+                fields.append((f["fieldname"], off))
                 leaves += [(off + o, s, k) for o, s, k in fl]
                 off += size
                 maxa = max(maxa, align)
-            self.layout_cache[key] = {"size": (off + maxa - 1) // maxa * maxa or 1, "align": maxa, "leaves": leaves}
+            self.layout_cache[key] = {"size": (off + maxa - 1) // maxa * maxa or 1, "align": maxa, "leaves": leaves,
+                                      "fields": fields}
         return self.layout_cache[key]
 
     def conv(self, name):
