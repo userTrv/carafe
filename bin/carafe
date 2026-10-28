@@ -164,7 +164,11 @@ cmd_wine() { wine_env; exec "$(wine_bin)" "$@"; }
 case "${1:-}" in
   engine) [[ "${2:-}" == install ]] || { usage; exit 1; }; cmd_engine_install ;;
   bottle) [[ "${2:-}" == create ]] || { usage; exit 1; }; cmd_bottle_create "${3:-}" ;;
-  steam) [[ "${2:-}" == login ]] || { usage; exit 1; }; cmd_steam_login "${3:-}" ;;
+  steam)
+    [[ "${2:-}" == login ]] || { usage; exit 1; }
+    # Пароль в аргументах оседает в истории шелла и в ps — не принимаем.
+    [[ $# -le 3 ]] || die "только логин; пароль steamcmd спросит сам"
+    cmd_steam_login "${3:-}" ;;
   game)
     case "${2:-}" in
       install) cmd_game_install "${3:-}" "${4:-}" ;;
