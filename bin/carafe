@@ -14,6 +14,22 @@ ENGINE_URL="https://github.com/Gcenx/game-porting-toolkit/releases/download/Game
 ENGINE_SHA256="d377683937340f914823dbb2e1252b329cbf834ff58907d0293db8cebf0e392e"
 STEAMCMD_URL="https://steamcdn-a.akamaihd.net/client/installer/steamcmd_osx.tar.gz"
 
+# Мост Steamworks: zig собирает Windows-DLL, Mac-библиотека Steam — из того же релиза SDK, что у игры.
+CARAFE_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BRIDGES="$CARAFE_HOME/bridge"
+ZIG_VERSION="0.17.0"
+ZIG_URL="https://ziglang.org/download/$ZIG_VERSION/zig-aarch64-macos-$ZIG_VERSION.tar.xz"
+ZIG_SHA256="b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a"
+# sha256 Windows steam_api64.dll → "коммит Steamworks.NET  sha256 его libsteam_api.dylib".
+# Функция, а не ассоциативный массив: в macOS bash 3.2.
+steamapi_mac() {
+  case "$1" in
+    # Steamworks.NET 2024.8.0, SDK 1.60 (Megabonk)
+    1add7f151fa644870a735ae86e68d1f019f296130d8e7c0a7ed3ecc7482dccbc)
+      echo "a2fc889ab2672981ec3e6225d551d86ce6923121 025a42fe02a40411429bc6afa7ff0092547408b03bf57d89da68413faed80176" ;;
+  esac
+}
+
 die() { echo "carafe: $*" >&2; exit 1; }
 log() { echo "==> $*" >&2; }
 
@@ -26,11 +42,12 @@ usage() {
   carafe game install APPID USER   скачать Windows-сборку игры через steamcmd
   carafe game import APPID [DIR]   забрать depot, скачанный консолью Steam (download_depot)
   carafe game run APPID [ARGS...]  запустить игру (exe ищется в папке игры)
+  carafe bridge build APPID        собрать мост в Steam для Mac (ачивки, лидерборды)
   carafe run EXE [ARGS...]         запустить произвольный .exe в префиксе
   carafe wine [ARGS...]            вызвать wine с окружением префикса (winecfg и т. п.)
 
 Переменные: CARAFE_BOTTLE (префикс, default), CARAFE_EXE (exe игры вручную),
-            CARAFE_HUD=1 (Metal HUD с FPS).
+            CARAFE_HUD=1 (Metal HUD с FPS), CARAFE_BRIDGE=0 (запуск без моста).
 EOF
 }
 
@@ -169,13 +186,106 @@ cmd_run() {
   exec "$(wine_bin)" "$(basename "$exe")" "$@"
 }
 
+# Оригинальный steam_api64.dll игры: на месте или уже убранный мостом.
+steam_api_orig() {
+  local dir="$1" f
+  f="$(find "$dir" -path '*/Plugins/x86_64/steam_api64.dll' 2>/dev/null | head -1)"
+  [[ -n "$f" ]] || f="$(find "$dir" -maxdepth 1 -name steam_api64.dll 2>/dev/null | head -1)"
+  [[ -n "$f" ]] || return 1
+  if [[ -f "$dir/.carafe-disabled/steam_api64.dll" ]]; then
+    echo "$f|$dir/.carafe-disabled/steam_api64.dll"
+  else
+    echo "$f|$f"
+  fi
+}
+
+ensure_zig() {
+  local z="$CARAFE_HOME/toolchain/zig-aarch64-macos-$ZIG_VERSION/zig"
+  if [[ ! -x "$z" ]]; then
+    log "качаю zig $ZIG_VERSION (нужен только для сборки моста)"
+    mkdir -p "$CARAFE_HOME/toolchain"
+    curl -fL --retry 5 -o "$CARAFE_HOME/toolchain/zig.tar.xz" "$ZIG_URL"
+    echo "$ZIG_SHA256  $CARAFE_HOME/toolchain/zig.tar.xz" | shasum -a 256 -c - >/dev/null || die "sha256 zig не совпал"
+    tar -xJf "$CARAFE_HOME/toolchain/zig.tar.xz" -C "$CARAFE_HOME/toolchain"
+    rm "$CARAFE_HOME/toolchain/zig.tar.xz"
+  fi
+  echo "$z"
+}
+
+cmd_bridge_build() {
+  local appid="${1:?нужен APPID}" pair live orig sha entry commit dsha
+  pair="$(steam_api_orig "$GAMES/$appid")" || die "в игре нет steam_api64.dll — мост не нужен"
+  live="${pair%%|*}" orig="${pair##*|}"
+  sha="$(shasum -a 256 "$orig" | cut -d' ' -f1)"
+  entry="$(steamapi_mac "$sha")"
+  [[ -n "$entry" ]] || die "неизвестная версия steam_api64.dll ($sha) — добавь пару в steamapi_mac"
+  commit="${entry% *}" dsha="${entry#* }"
+  local out="$BRIDGES/$sha" dylib="$BRIDGES/$sha/src/libsteam_api.dylib"
+  mkdir -p "$out/src"
+  if [[ ! -f "$dylib" ]]; then
+    log "качаю libsteam_api.dylib (Steamworks.NET ${commit:0:10})"
+    # Через API, а не raw.githubusercontent.com: тот у части провайдеров недоступен.
+    curl -fsSL --retry 5 -H 'Accept: application/vnd.github.raw' -o "$dylib" \
+      "https://api.github.com/repos/rlabrecque/Steamworks.NET/contents/com.rlabrecque.steamworks.net/Plugins/steam_api.bundle/Contents/MacOS/libsteam_api.dylib?ref=$commit"
+  fi
+  echo "$dsha  $dylib" | shasum -a 256 -c - >/dev/null || { rm -f "$dylib"; die "sha256 libsteam_api.dylib не совпал"; }
+  ZIG="$(ensure_zig)" "$CARAFE_SRC/bridge/build.sh" "$orig" "$dylib" "$out"
+  xattr -dr com.apple.quarantine "$out" 2>/dev/null || true
+  log "мост готов: $out"
+}
+
+# Поставить DLL моста (или вернуть оригинал). Печатает каталог моста, если он включён.
+apply_bridge() {
+  local dir="$1" pair live orig sha
+  pair="$(steam_api_orig "$dir")" || return 0
+  live="${pair%%|*}" orig="${pair##*|}"
+  sha="$(shasum -a 256 "$orig" | cut -d' ' -f1)"
+  local b="$BRIDGES/$sha"
+  if [[ "${CARAFE_BRIDGE:-1}" == 0 || ! -x "$b/carafe-steamd" ]]; then
+    if [[ "$orig" != "$live" ]]; then
+      log "мост выключен: возвращаю оригинальный steam_api64.dll"
+      cp "$orig" "$live"
+    fi
+    return 0
+  fi
+  if [[ "$orig" == "$live" ]]; then
+    mkdir -p "$dir/.carafe-disabled"
+    cp "$live" "$dir/.carafe-disabled/steam_api64.dll"
+  fi
+  cmp -s "$b/steam_api64.dll" "$live" || cp "$b/steam_api64.dll" "$live"
+  echo "$b"
+}
+
 cmd_game_run() {
   local appid="${1:?нужен APPID}"; shift
   local exe; exe="$(find_game_exe "$GAMES/$appid")"
   [[ -n "$exe" ]] || die "не нашёл exe в $GAMES/$appid (задай CARAFE_EXE)"
   apply_quirks "$GAMES/$appid"
+  local bridge; bridge="$(apply_bridge "$GAMES/$appid")"
+  if [[ -z "$bridge" ]]; then
+    log "запускаю $exe"
+    cmd_run "$exe" "$@"
+  fi
+
+  # Хелпер живёт, пока идёт игра: SteamAppId говорит Steam, за какую игру он выступает.
+  local fifo; fifo="$(mktemp -u "${TMPDIR:-/tmp}/carafe-steamd.XXXXXX")"
+  mkfifo "$fifo"
+  CARAFE_BRIDGE_TOKEN="$(head -c 32 /dev/urandom | xxd -p -c 64)"
+  export CARAFE_BRIDGE_TOKEN
+  CARAFE_BRIDGE_LOG="$CARAFE_HOME/bridge-$appid.log" SteamAppId="$appid" SteamGameId="$appid" \
+    "$bridge/carafe-steamd" > "$fifo" &
+  local steamd=$!
+  local port; read -r port < "$fifo"; rm -f "$fifo"
+  [[ "$port" =~ ^[0-9]+$ ]] || { kill "$steamd" 2>/dev/null; die "carafe-steamd не запустился"; }
+  export CARAFE_BRIDGE_PORT="$port"
+  log "мост в Steam: порт $port, лог $CARAFE_HOME/bridge-$appid.log"
   log "запускаю $exe"
-  cmd_run "$exe" "$@"
+  local rc=0
+  ( cmd_run "$exe" "$@" ) || rc=$?
+  # Лаунчер wine может выйти раньше игры, поэтому хелпер не убиваем: он сам завершится,
+  # когда игра закроет соединение (или через 2 минуты, если она так и не подключилась).
+  wait "$steamd" 2>/dev/null || true
+  return "$rc"
 }
 
 cmd_wine() { wine_env; exec "$(wine_bin)" "$@"; }
@@ -195,6 +305,7 @@ case "${1:-}" in
       run) shift 2; cmd_game_run "$@" ;;
       *) usage; exit 1 ;;
     esac ;;
+  bridge) [[ "${2:-}" == build ]] || { usage; exit 1; }; cmd_bridge_build "${3:-}" ;;
   run) shift; cmd_run "$@" ;;
   wine) shift; cmd_wine "$@" ;;
   -h|--help|help|"") usage ;;
