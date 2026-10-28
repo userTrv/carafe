@@ -119,6 +119,24 @@ cmd_game_install() {
   echo "$appid" > "$GAMES/$appid/steam_appid.txt"
 }
 
+# Обходы того, чего нет в Wine 7.7 из GPTK. Идемпотентно, вызывается перед запуском.
+apply_quirks() {
+  local dir="$1" wine_dlls; wine_dlls="$(dirname "$(dirname "$(wine_bin)")")/lib/wine/x86_64-windows"
+  # IL2CPP-сборки Unity импортируют apiset, которого нет; функция живёт в wintypes.dll.
+  local robuf="api-ms-win-core-winrt-robuffer-l1-1-0.dll"
+  if [[ -f "$dir/GameAssembly.dll" && ! -f "$dir/$robuf" ]] && grep -aq "$robuf" "$dir/GameAssembly.dll"; then
+    log "quirk: $robuf → wintypes.dll"
+    cp "$wine_dlls/wintypes.dll" "$dir/$robuf"
+  fi
+  # Плагин Rewired для Windows.Gaming.Input падает без WinRT; без него Rewired берёт XInput/Raw Input.
+  local wgi
+  while IFS= read -r wgi; do
+    log "quirk: отключаю ${wgi#"$dir"/}"
+    mkdir -p "$dir/.carafe-disabled"
+    mv "$wgi" "$dir/.carafe-disabled/"
+  done < <(find "$dir" -path '*/Plugins/x86_64/*' -iname 'Rewired_WindowsGamingInput.dll' 2>/dev/null)
+}
+
 # Забрать игру, скачанную основным Steam-клиентом через консоль (download_depot).
 cmd_game_import() {
   local appid="${1:?нужен APPID}" src="${2:-}"
@@ -155,6 +173,7 @@ cmd_game_run() {
   local appid="${1:?нужен APPID}"; shift
   local exe; exe="$(find_game_exe "$GAMES/$appid")"
   [[ -n "$exe" ]] || die "не нашёл exe в $GAMES/$appid (задай CARAFE_EXE)"
+  apply_quirks "$GAMES/$appid"
   log "запускаю $exe"
   cmd_run "$exe" "$@"
 }
