@@ -274,6 +274,10 @@ function go(view, appid = null) {
     loadEnv();
   }
   if (view === "settings") renderSettings();
+  if (view === "downloads") {
+    renderDownloads();
+    pollDownloads();
+  }
 }
 
 document.querySelectorAll(".nav-item").forEach((b) => b.addEventListener("click", () => go(b.dataset.view)));
@@ -363,7 +367,8 @@ function pickHero() {
 function playButton(g) {
   const t = task(`launch:${g.appid}`);
   const cls = "play";
-  if (!g.installed) return `<button class="${cls}" disabled style="opacity:.5">Не установлена</button>`;
+  if (!g.installed) return installButton(g);
+  if (g.available === false) return `<button class="${cls}" disabled style="opacity:.5">${I.disk}Диск отключён</button>`;
   if (t?.running) {
     if (t.stages.game?.status === "active") return `<button class="${cls} running" disabled>${I.game}Играет</button>`;
     const st = STAGES.find((s) => t.stages[s.id]?.status === "active");
@@ -424,12 +429,12 @@ function renderGrid() {
            ${g.cloud.state !== "unknown" ? `<span class="badge ${c.cls}" title="${esc(c.label)}">${c.icon}</span>` : ""}`
         : "";
       return `
-      <button class="card ${g.installed ? "" : "off"}" data-open="${g.appid}" style="animation-delay:${Math.min(i, 16) * 25}ms">
+      <button class="card ${g.installed && g.available !== false ? "" : "off"}" data-open="${g.appid}" style="animation-delay:${Math.min(i, 16) * 25}ms">
         ${cover(g)}
         ${live ? `<span class="chip ok live">${I.game}Играет</span>` : ""}
         <span class="badges">${badges}</span>
-        ${g.installed && !live ? `<span class="card-play" data-play="${g.appid}" title="Играть">${I.play}</span>` : ""}
-        <span class="card-foot"><span class="card-name">${esc(g.name)}</span>${g.installed ? "" : `<span class="chip chip-quiet">не установлена</span>`}</span>
+        ${g.installed && g.available !== false && !live ? `<span class="card-play" data-play="${g.appid}" title="Играть">${I.play}</span>` : ""}
+        <span class="card-foot"><span class="card-name">${esc(g.name)}</span>${g.installed ? (g.available === false ? `<span class="chip warn">диск отключён</span>` : "") : `<span class="chip chip-quiet">не установлена</span>`}</span>
       </button>`;
     })
     .join("");
@@ -506,7 +511,9 @@ function renderGameChips() {
     <span class="chip ${b.cls}">${building ? '<span class="spin" style="width:12px;height:12px"></span>' : I.trophy}${building ? "Собираю мост" : esc(b.label)}</span>
     ${g.bridge === "notBuilt" && !building && g.installed ? `<button class="btn btn-sm" id="build">Собрать</button>` : ""}
     <span class="chip ${c.cls}">${c.icon}${esc(c.label)}</span>
-    ${sz ? `<span class="chip chip-quiet">${sz}</span>` : ""}`;
+    ${sz ? `<span class="chip chip-quiet">${sz}</span>` : ""}
+    ${libraryChips(g)}`;
+  wireLibraryChips(g);
   const btn = $("#build");
   if (btn) btn.onclick = () => buildBridge(g.appid);
 }
@@ -652,6 +659,7 @@ function renderSettings() {
         <div class="field"><div class="field-label">Мост в Steam<div class="field-sub">ачивки и лидерборды</div></div>${sw("bridge", p.bridge)}</div>
         <div class="field"><div class="field-label">Steam Cloud</div>${sw("cloud", p.cloud)}</div>
       </div>
+      <div class="group" id="libs"></div>
       <div class="group">
         <h2>Ядро</h2>
         <div class="field"><div class="field-label">Checkout carafe<div class="field-sub" id="backend-now">${esc(S.info?.backend || "")}</div></div>
@@ -659,6 +667,8 @@ function renderSettings() {
       </div>
     </section>`;
   main.querySelectorAll("[data-key]").forEach((el) => el.addEventListener("change", () => saveSetting(el)));
+  renderLibs();
+  loadLibs();
 }
 
 async function saveSetting(el) {
@@ -700,7 +710,7 @@ async function saveSetting(el) {
   $("#backend-label").textContent = S.info.backend;
   const route = S.info.route || "";
   const [r, id] = route.split("/");
-  go(r === "game" || r === "play" ? "library" : r === "setup" || r === "settings" ? r : "library");
+  go(r === "game" || r === "play" ? "library" : r === "setup" || r === "settings" || r === "downloads" ? r : "library");
   await Promise.all([loadGames(), loadEnv()]);
   if (r === "game" || r === "play") {
     go("game", Number(id));

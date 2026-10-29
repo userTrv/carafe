@@ -6,6 +6,9 @@
 //! Все методы блокирующие: GUI зовёт их из отдельных потоков. Долгие операции
 //! (запуск, сборка моста, установка движка) шлют события в `Events` по ходу дела.
 
+use std::path::Path;
+use std::sync::atomic::AtomicBool;
+
 use serde::{Deserialize, Serialize};
 
 pub type AppId = u32;
@@ -42,6 +45,10 @@ pub struct Game {
     pub cover: Cover,
     pub installed: bool,
     pub size_bytes: Option<u64>,
+    /// Папка библиотеки, где лежит игра.
+    pub library: Option<String>,
+    /// false — библиотека недоступна (внешний диск отключён): игра есть, но запустить нельзя.
+    pub available: bool,
     pub bridge: BridgeState,
     pub cloud: CloudSummary,
 }
@@ -246,6 +253,8 @@ pub enum Stage {
     Game,
     CloudPush,
     Download,
+    /// Перенос игры в другую библиотеку.
+    Move,
     Unpack,
     Bottle,
     Build,
@@ -258,6 +267,85 @@ pub enum StageStatus {
     Done,
     Skipped,
     Failed { message: String },
+}
+
+/// Папка библиотеки с местом на диске.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Library {
+    pub path: String,
+    /// Короткое имя: «Встроенная», имя тома или папки.
+    pub name: String,
+    pub builtin: bool,
+    pub default: bool,
+    pub available: bool,
+    pub total_bytes: Option<u64>,
+    pub free_bytes: Option<u64>,
+    /// Сколько занимают игры.
+    pub used_bytes: u64,
+    pub games: u32,
+}
+
+/// Загрузка в очереди.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Download {
+    pub appid: AppId,
+    pub name: String,
+    pub cover: Cover,
+    pub library: String,
+    pub kind: DownloadKind,
+    pub state: DownloadState,
+    pub stage: Option<DownloadStage>,
+    pub done_bytes: u64,
+    pub total_bytes: u64,
+    /// Байт в секунду.
+    pub speed: Option<u64>,
+    pub eta_secs: Option<u64>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DownloadKind {
+    Install,
+    Update,
+    Verify,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DownloadState {
+    Queued,
+    Active,
+    Paused,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DownloadStage {
+    Preparing,
+    Allocating,
+    Downloading,
+    Verifying,
+    Committing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DownloadAction {
+    Pause,
+    Resume,
+    Cancel,
+    /// В начало очереди.
+    Top,
+    Up,
+    Down,
+}
+
+fn unsupported<T>() -> Result<T> {
+    Err(BackendError::new("не поддерживается этим ядром"))
 }
 
 pub trait Backend: Send + Sync {
@@ -281,6 +369,52 @@ pub trait Backend: Send + Sync {
 
     /// Открыть Steam для Mac (мост и облако говорят с ним).
     fn open_steam(&self) -> Result<()>;
+
+    /// Папки библиотек: встроенная первой.
+    fn libraries(&self) -> Result<Vec<Library>> {
+        unsupported()
+    }
+
+    fn add_library(&self, _path: &Path) -> Result<()> {
+        unsupported()
+    }
+
+    /// Убрать из списка; файлы не трогаются.
+    fn remove_library(&self, _path: &Path) -> Result<()> {
+        unsupported()
+    }
+
+    fn set_default_library(&self, _path: &Path) -> Result<()> {
+        unsupported()
+    }
+
+    /// Поставить игру в очередь загрузок: в `library` или в папку по умолчанию.
+    fn install(&self, _appid: AppId, _library: Option<&Path>) -> Result<()> {
+        unsupported()
+    }
+
+    /// Перенести игру в другую библиотеку. Прогресс — `Progress { stage: Move }`; `cancel` —
+    /// остановить, исходник остаётся целым.
+    fn move_game(
+        &self,
+        _appid: AppId,
+        _library: &Path,
+        _cancel: &AtomicBool,
+        _events: Events,
+    ) -> Result<()> {
+        unsupported()
+    }
+
+    fn downloads(&self) -> Result<Vec<Download>> {
+        Ok(Vec::new())
+    }
+
+    fn download_action(&self, _appid: AppId, _action: DownloadAction) -> Result<()> {
+        unsupported()
+    }
+
+    /// Выход из GUI: остановить фоновые загрузки (продолжатся при следующем запуске).
+    fn shutdown(&self) {}
 
     /// Починить одну проверку окружения.
     fn fix(&self, check: CheckId, profile: &Profile, events: Events) -> Result<()> {

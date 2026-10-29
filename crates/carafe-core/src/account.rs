@@ -4,18 +4,17 @@
 //! Пароль Steam carafe не видит и не хранит: вход подтверждается в мобильном приложении Steam.
 //! Это сторонний клиент Steam — Valve такие терпит, но официально не поддерживает.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
-use std::sync::atomic::AtomicBool;
 
+use crate::Carafe;
+use crate::download::{DownloadEvent, DownloadRequest, DownloadStage, Downloader, StopFlag};
 use crate::error::{Error, Result};
 use crate::fsutil;
 use crate::process::Log;
 use crate::steamclient::{
-    self, Account, AppDepots, Credentials, DownloadEvent, DownloadResult, LoginEvent, OwnedApp, RefreshToken,
-    SteamHelper,
+    self, Account, AppDepots, Credentials, DepotEvent, LoginEvent, OwnedApp, RefreshToken, SteamHelper,
 };
-use crate::{Carafe, steam};
 
 /// Сервис записи в Связке ключей.
 pub const KEYCHAIN_SERVICE: &str = "dev.usertrv.carafe.steam";
@@ -132,7 +131,11 @@ impl Carafe {
 
     /// Вход по QR: `on_event` получает URL для QR (и новые, если Steam его сменит). Токен —
     /// в Связку ключей. Прервать — `cancel`.
-    pub fn steam_login_qr(&self, on_event: &mut dyn FnMut(LoginEvent), cancel: Option<&AtomicBool>) -> Result<Account> {
+    pub fn steam_login_qr(
+        &self,
+        on_event: &mut dyn FnMut(LoginEvent),
+        cancel: Option<&dyn Fn() -> bool>,
+    ) -> Result<Account> {
         let mut h = self.steam_spawn()?;
         self.log(Log::Step("вход в Steam по QR".into()));
         let (account, creds) = h.login_qr(DEVICE_NAME, on_event, cancel)?;
@@ -170,10 +173,11 @@ impl Carafe {
     /// Все купленные игры аккаунта с отметкой установленных, по имени.
     pub fn owned_games(&self) -> Result<Vec<OwnedGame>> {
         let (mut h, _) = self.steam_connect()?;
+        let installed: std::collections::HashSet<u32> = self.game_locations()?.into_iter().map(|g| g.appid).collect();
         let mut games: Vec<OwnedGame> = h
             .owned_apps()?
             .into_iter()
-            .map(|app| OwnedGame { installed: self.config.game_dir(app.appid).is_dir(), app })
+            .map(|app| OwnedGame { installed: installed.contains(&app.appid), app })
             .collect();
         games.sort_by_cached_key(|g| (g.app.name.to_lowercase(), g.app.appid));
         Ok(games)
@@ -188,23 +192,94 @@ impl Carafe {
         };
         h.app_info(appid)
     }
+}
 
-    /// Скачать Windows-сборку игры с аккаунта в `dir` (по умолчанию — `games/<appid>`), без
-    /// steamcmd. На это место встанет очередь установки: прогресс в байтах, отмена флагом.
-    pub fn steam_download(
-        &self,
-        appid: u32,
-        dir: Option<&Path>,
-        on_event: &mut dyn FnMut(DownloadEvent),
-        cancel: Option<&AtomicBool>,
-    ) -> Result<DownloadResult> {
-        let dir = dir.map(Path::to_path_buf).unwrap_or_else(|| self.config.game_dir(appid));
-        let (mut h, _) = self.steam_connect()?;
-        fsutil::create_dir_all(&dir)?;
-        self.log(Log::Step(format!("качаю {appid} из Steam в {}", dir.display())));
-        let r = h.download(appid, &dir, &[], on_event, cancel)?;
-        steam::write_appid(&dir, appid)?;
-        Ok(r)
+/// Загрузчик для очереди ([`crate::queue`]) через `carafe-steam`: Windows-депо с аккаунта из
+/// `carafe login`, без steamcmd и его отдельного входа. Остановка очереди — `cancel` хелперу;
+/// уже скачанные файлы (тот же размер и SHA-1) при продолжении не качаются заново.
+pub struct SteamKitDownloader {
+    carafe: Carafe,
+}
+
+impl SteamKitDownloader {
+    pub fn new(carafe: Carafe) -> SteamKitDownloader {
+        SteamKitDownloader { carafe }
+    }
+}
+
+impl Downloader for SteamKitDownloader {
+    fn name(&self) -> &str {
+        "SteamKit2"
+    }
+
+    fn download(&self, req: &DownloadRequest, stop: &StopFlag, on_event: &mut dyn FnMut(DownloadEvent)) -> Result<()> {
+        on_event(DownloadEvent::Stage(DownloadStage::Preparing));
+        let (mut h, _) = self.carafe.steam_connect()?;
+        if stop.is_stopped() {
+            return Err(Error::Interrupted);
+        }
+        let mut downloading = false;
+        let r = h.download(
+            req.appid,
+            &req.dir,
+            req.branch.as_deref(),
+            &req.depots,
+            &mut |e| match e {
+                DepotEvent::Depot { depotid, files, total, .. } => on_event(DownloadEvent::Log(format!(
+                    "депо {depotid}: файлов {files}, {}",
+                    fsutil::human_bytes(total)
+                ))),
+                DepotEvent::Progress { downloaded, total } => {
+                    // Хелпер сам сверяет уже скачанные файлы по SHA-1 — это часть загрузки.
+                    if !downloading {
+                        downloading = true;
+                        on_event(DownloadEvent::Stage(if req.verify {
+                            DownloadStage::Verifying
+                        } else {
+                            DownloadStage::Downloading
+                        }));
+                    }
+                    on_event(DownloadEvent::Progress { done: downloaded, total });
+                }
+            },
+            Some(&|| stop.is_stopped()),
+        )?;
+        on_event(DownloadEvent::Log(format!("готово: файлов {}, без изменений {}", r.files, r.unchanged)));
+        Ok(())
+    }
+}
+
+/// Загрузчик по умолчанию для очереди: есть вход через `carafe login` — [`SteamKitDownloader`],
+/// нет — steamcmd с его сохранённым входом. Решает при каждой загрузке: вошёл или вышел
+/// посреди очереди — следующая игра пойдёт уже по-новому.
+pub struct AutoDownloader {
+    steamkit: SteamKitDownloader,
+    steamcmd: crate::SteamCmdDownloader,
+}
+
+impl AutoDownloader {
+    pub fn new(carafe: Carafe) -> AutoDownloader {
+        AutoDownloader {
+            steamkit: SteamKitDownloader::new(carafe.clone()),
+            steamcmd: crate::SteamCmdDownloader::new(carafe, None),
+        }
+    }
+
+    fn pick(&self) -> &dyn Downloader {
+        match self.steamkit.carafe.steam_account() {
+            Ok(Some(_)) => &self.steamkit,
+            _ => &self.steamcmd,
+        }
+    }
+}
+
+impl Downloader for AutoDownloader {
+    fn name(&self) -> &str {
+        self.pick().name()
+    }
+
+    fn download(&self, req: &DownloadRequest, stop: &StopFlag, on_event: &mut dyn FnMut(DownloadEvent)) -> Result<()> {
+        self.pick().download(req, stop, on_event)
     }
 }
 
@@ -213,6 +288,7 @@ mod tests {
     use super::*;
     use crate::Config;
     use crate::fsutil::testdir::TestDir;
+    use std::path::Path;
     use std::sync::Arc;
 
     fn carafe(home: &Path, store: Arc<MemoryStore>) -> Carafe {
@@ -252,11 +328,41 @@ mod tests {
             [(3405340, true), (1245620, false)]
         );
 
-        let r = c.steam_download(3405340, None, &mut |_| {}, None).unwrap();
-        assert_eq!(r.downloaded, 300);
-        assert_eq!(std::fs::read_to_string(home.path().join("games/3405340/steam_appid.txt")).unwrap(), "3405340\n");
+        let req = DownloadRequest {
+            appid: 3405340,
+            dir: home.path().join("games/3405340"),
+            branch: None,
+            depots: vec![],
+            verify: false,
+        };
+        let mut ev = vec![];
+        SteamKitDownloader::new(c.clone()).download(&req, &StopFlag::default(), &mut |e| ev.push(e)).unwrap();
+        assert_eq!(ev[0], DownloadEvent::Stage(DownloadStage::Preparing));
+        assert!(ev.contains(&DownloadEvent::Stage(DownloadStage::Downloading)), "{ev:?}");
+        assert_eq!(
+            ev.iter().rev().find(|e| matches!(e, DownloadEvent::Progress { .. })),
+            Some(&DownloadEvent::Progress { done: 300, total: 300 })
+        );
+
+        // Остановленный заранее — сразу Interrupted; посреди загрузки — cancel хелперу.
+        let stop = StopFlag::default();
+        stop.stop();
+        assert!(matches!(
+            SteamKitDownloader::new(c.clone()).download(&req, &stop, &mut |_| {}),
+            Err(Error::Interrupted)
+        ));
+        let stop = StopFlag::default();
+        let slow = DownloadRequest { appid: 2, ..req.clone() };
+        let r = SteamKitDownloader::new(c.clone()).download(&slow, &stop, &mut |e| {
+            if matches!(e, DownloadEvent::Progress { .. }) {
+                stop.stop()
+            }
+        });
+        assert!(matches!(r, Err(Error::Interrupted)), "{r:?}");
+        assert_eq!(AutoDownloader::new(c.clone()).name(), "SteamKit2");
 
         assert!(c.steam_logout().unwrap());
+        assert_eq!(AutoDownloader::new(c.clone()).name(), "steamcmd");
         assert_eq!(store.load().unwrap(), None);
         assert!(!c.steam_logout().unwrap(), "второй выход — нечего отзывать");
     }

@@ -43,6 +43,22 @@ bin/carafe game run <appid>
 bin/carafe game import <appid>
 ```
 
+## Библиотеки и загрузки (Rust-версия)
+
+Игры могут лежать в нескольких папках, например на внешнем SSD: `<папка>/<appid>`. Встроенная — прежняя `games/`; без настроек всё как раньше. Список — в `libraryfolders.vdf` в каталоге carafe; он помнит игры каждой папки, так что игры с отключённого диска видны как недоступные.
+
+```bash
+carafe library add /Volumes/SSD/Games      # папку можно создать, но только на подключённом диске
+carafe library default /Volumes/SSD/Games  # сюда ставятся новые игры
+carafe library list                        # место на дисках
+carafe library du                          # место по играм
+carafe game install <appid> [логин] [--to /Volumes/SSD/Games]
+carafe game move <appid> /Volumes/SSD/Games   # тот же том — rename, иначе копия, потом удаление
+carafe downloads                           # очередь: pause|resume|cancel|top <appid>, run
+```
+
+Установка идёт через очередь (`downloads.vdf`): по одной загрузке, порядок меняется, прерванная докачивается после перезапуска. Очередь обрабатывает один процесс — CLI или GUI; управлять ей можно из любого.
+
 ## Мост в Steam для Mac
 
 ```bash

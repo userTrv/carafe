@@ -9,7 +9,6 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -129,9 +128,9 @@ pub struct Branch {
     pub description: Option<String>,
 }
 
-/// События загрузки.
+/// События загрузки от хелпера (в очередь их переводит [`crate::SteamKitDownloader`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DownloadEvent {
+pub enum DepotEvent {
     /// Манифест депо получен: сколько в нём файлов и байт.
     Depot { depotid: u32, manifest: String, files: u64, total: u64 },
     /// Байты всего задания (все депо).
@@ -242,13 +241,14 @@ impl SteamHelper {
     }
 
     /// Запрос: события — в `on_event(имя, сообщение)`, итог — `result` ответа.
-    /// `cancel` выставлен — хелперу уходит `cancel`, ответ придёт ошибкой `cancelled`.
+    /// `cancel()` вернул true — хелперу уходит `cancel`, ответ придёт ошибкой `cancelled`
+    /// ([`Error::Interrupted`]).
     pub fn request(
         &mut self,
         cmd: &str,
         mut args: Value,
         on_event: &mut dyn FnMut(&str, &Value),
-        cancel: Option<&AtomicBool>,
+        cancel: Option<&dyn Fn() -> bool>,
         timeout: Option<Duration>,
     ) -> Result<Value> {
         let id = self.next_id;
@@ -262,7 +262,7 @@ impl SteamHelper {
         let deadline = timeout.map(|t| Instant::now() + t);
         let mut cancel_sent = false;
         loop {
-            if !cancel_sent && cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+            if !cancel_sent && cancel.is_some_and(|c| c()) {
                 cancel_sent = true;
                 let cid = self.next_id;
                 self.next_id += 1;
@@ -293,7 +293,7 @@ impl SteamHelper {
                 Some(false) => {
                     let code = msg["error"]["code"].as_str().unwrap_or("failed").to_string();
                     let message = msg["error"]["message"].as_str().unwrap_or("ошибка").to_string();
-                    Err(if code == "cancelled" { Error::Cancelled } else { Error::Steam { code, message } })
+                    Err(if code == "cancelled" { Error::Interrupted } else { Error::Steam { code, message } })
                 }
                 None => Err(Error::SteamProtocol("ответ без ok".into())),
             };
@@ -310,7 +310,7 @@ impl SteamHelper {
         &mut self,
         device_name: &str,
         on_event: &mut dyn FnMut(LoginEvent),
-        cancel: Option<&AtomicBool>,
+        cancel: Option<&dyn Fn() -> bool>,
     ) -> Result<(Account, Credentials)> {
         let mut v = self.request(
             "login_qr",
@@ -355,19 +355,24 @@ impl SteamHelper {
         self.simple("app_info", json!({ "appid": appid }))
     }
 
-    /// Скачать Windows-депо `appid` в `dir`. `depots` пустой — какие выберет хелпер.
+    /// Скачать Windows-депо `appid` в `dir`. `depots` пустой — какие выберет хелпер;
+    /// `branch: None` — public.
     pub fn download(
         &mut self,
         appid: u32,
         dir: &Path,
+        branch: Option<&str>,
         depots: &[u32],
-        on_event: &mut dyn FnMut(DownloadEvent),
-        cancel: Option<&AtomicBool>,
+        on_event: &mut dyn FnMut(DepotEvent),
+        cancel: Option<&dyn Fn() -> bool>,
     ) -> Result<DownloadResult> {
         let dir = dir.to_str().ok_or(Error::Usage("путь к папке игры — не UTF-8"))?;
         let mut args = json!({ "appid": appid, "dir": dir });
         if !depots.is_empty() {
             args["depots"] = json!(depots);
+        }
+        if let Some(b) = branch {
+            args["branch"] = b.into();
         }
         let v = self.request(
             "download",
@@ -375,8 +380,8 @@ impl SteamHelper {
             &mut |ev, m| {
                 let n = |k: &str| m[k].as_u64().unwrap_or(0);
                 match ev {
-                    "progress" => on_event(DownloadEvent::Progress { downloaded: n("downloaded"), total: n("total") }),
-                    "depot" => on_event(DownloadEvent::Depot {
+                    "progress" => on_event(DepotEvent::Progress { downloaded: n("downloaded"), total: n("total") }),
+                    "depot" => on_event(DepotEvent::Depot {
                         depotid: n("depotid") as u32,
                         manifest: m["manifest"].as_str().unwrap_or_default().into(),
                         files: n("files"),
@@ -527,21 +532,29 @@ pub(crate) mod tests {
     fn download_progress_and_cancel() {
         let (mut h, _) = spawn();
         let mut got = vec![];
-        let r = h.download(3405340, Path::new("/tmp/carafe-test"), &[], &mut |e| got.push(e), None).unwrap();
+        let r = h.download(3405340, Path::new("/tmp/carafe-test"), None, &[], &mut |e| got.push(e), None).unwrap();
         assert_eq!(
             got,
             [
-                DownloadEvent::Depot { depotid: 3405341, manifest: "77".into(), files: 3, total: 300 },
-                DownloadEvent::Progress { downloaded: 0, total: 300 },
-                DownloadEvent::Progress { downloaded: 300, total: 300 },
+                DepotEvent::Depot { depotid: 3405341, manifest: "77".into(), files: 3, total: 300 },
+                DepotEvent::Progress { downloaded: 0, total: 300 },
+                DepotEvent::Progress { downloaded: 300, total: 300 },
             ]
         );
         assert_eq!((r.downloaded, r.files, r.depots[0].depotid), (300, 3, 3405341));
 
         // appid 2 — «бесконечная» загрузка: ждёт cancel.
-        let cancel = AtomicBool::new(false);
-        let r = h.download(2, Path::new("/tmp/x"), &[], &mut |_| cancel.store(true, Ordering::Relaxed), Some(&cancel));
-        assert!(matches!(r, Err(Error::Cancelled)), "{r:?}");
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let stop = AtomicBool::new(false);
+        let r = h.download(
+            2,
+            Path::new("/tmp/x"),
+            None,
+            &[],
+            &mut |_| stop.store(true, Ordering::Relaxed),
+            Some(&|| stop.load(Ordering::Relaxed)),
+        );
+        assert!(matches!(r, Err(Error::Interrupted)), "{r:?}");
         // После отмены сессия жива.
         assert_eq!(h.app_info(3405340).unwrap().name, "Megabonk");
     }

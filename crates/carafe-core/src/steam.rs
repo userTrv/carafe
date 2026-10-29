@@ -9,6 +9,7 @@ use crate::appinfo::{self, AppInfo, CloudRule};
 use crate::error::{Error, IoContext, Result};
 use crate::fsutil;
 use crate::process::{self, Log};
+use crate::queue::{Job, JobKind};
 
 pub const STEAMCMD_URL: &str = "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_osx.tar.gz";
 
@@ -44,22 +45,20 @@ impl Carafe {
         process::run_inherit(Command::new(sh).args(["+login", user, "+quit"]))
     }
 
-    /// Скачать Windows-сборку игры с аккаунта `user`.
-    pub fn game_install(&self, appid: u32, user: &str) -> Result<()> {
-        let sh = self.ensure_steamcmd()?;
-        let dir = self.config.game_dir(appid);
-        fsutil::create_dir_all(&dir)?;
-        process::run_inherit(
-            Command::new(sh).args(["+@sSteamCmdForcePlatformType", "windows", "+force_install_dir"]).arg(&dir).args([
-                "+login",
-                user,
-                "+app_update",
-                &appid.to_string(),
-                "validate",
-                "+quit",
-            ]),
-        )?;
-        write_appid(&dir, appid)
+    /// Поставить игру в очередь загрузок: установку в `to` (или в библиотеку по умолчанию), а если
+    /// игра уже стоит — обновление на месте. Качает обработчик очереди ([`crate::Queue`]).
+    pub fn enqueue_game(&self, appid: u32, to: Option<&Path>, verify: bool) -> Result<Job> {
+        let installed = self.locate(appid)?.is_some();
+        let dir = self.install_dir(appid, to)?;
+        let kind = match (installed, verify) {
+            (false, _) => JobKind::Install,
+            (true, true) => JobKind::Verify,
+            (true, false) => JobKind::Update,
+        };
+        let mut job = Job::new(appid, dir, kind);
+        job.name = self.cached_app_info(appid).and_then(|i| i.name);
+        self.queue().add(job.clone())?;
+        Ok(job)
     }
 
     /// Забрать игру, скачанную основным Steam-клиентом через консоль (`download_depot`).
@@ -72,7 +71,7 @@ impl Carafe {
         if !src.is_dir() {
             return Err(Error::NoSuchDir(src));
         }
-        let dir = self.config.game_dir(appid);
+        let dir = self.install_dir(appid, None)?;
         self.log(Log::Step(format!("переношу {} → {}", src.display(), dir.display())));
         fsutil::create_dir_all(&dir)?;
         let mut from = src.as_os_str().to_owned();
@@ -95,7 +94,7 @@ impl Carafe {
         let out = cmd.output().map_err(process::spawn_err(&cmd))?;
         let text = String::from_utf8_lossy(&out.stdout);
         let (info, node) = appinfo::parse_app_info_print(&text, appid)?;
-        let dir = self.config.game_dir(appid);
+        let dir = self.game_dir(appid);
         if dir.is_dir() {
             let cache = dir.join(APPINFO_CACHE);
             fs::write(&cache, format!("{node}\n")).at(&cache)?;
@@ -113,14 +112,14 @@ impl Carafe {
     }
 
     pub fn cached_app_info(&self, appid: u32) -> Option<AppInfo> {
-        let text = fs::read_to_string(self.config.game_dir(appid).join(APPINFO_CACHE)).ok()?;
+        let text = fs::read_to_string(self.game_dir(appid).join(APPINFO_CACHE)).ok()?;
         appinfo::parse_app_info_print(&text, appid).ok().map(|(i, _)| i)
     }
 
     /// Правила Auto-Cloud игры. Кеш `.carafe-ufs` — тот же, что у bash-версии; пустой кеш
     /// перечитывается из appinfo. Не получилось узнать — правил нет, как в bash.
     pub fn cloud_rules(&self, appid: u32) -> Result<Vec<CloudRule>> {
-        let dir = self.config.game_dir(appid);
+        let dir = self.game_dir(appid);
         let cache = dir.join(UFS_CACHE);
         if let Ok(text) = fs::read_to_string(&cache)
             && !text.is_empty()
@@ -142,7 +141,7 @@ impl Carafe {
 
     /// Правила из кеша, без steamcmd: `None` — ещё не узнавали.
     pub fn cached_cloud_rules(&self, appid: u32) -> Option<Vec<CloudRule>> {
-        let dir = self.config.game_dir(appid);
+        let dir = self.game_dir(appid);
         match fs::read_to_string(dir.join(UFS_CACHE)) {
             Ok(text) if !text.is_empty() => Some(appinfo::parse_rules_cache(&text)),
             _ => self.cached_app_info(appid).map(|i| i.cloud_rules),

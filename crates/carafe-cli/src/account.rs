@@ -1,11 +1,12 @@
-//! `carafe login|logout|account|library` и `game install APPID` через аккаунт Steam.
+//! `carafe login|logout|account` и `carafe game owned`: аккаунт Steam через `carafe-steam`.
+//! Установка с аккаунта — через очередь (`carafe game install APPID` без USER).
 //!
 //! С `--json` вывод — JSON-строки в stdout для GUI (`gui/src-tauri/src/cli.rs`); ошибки —
 //! как везде, `carafe: …` в stderr и код 1.
 
-use std::io::{IsTerminal, Write};
+use std::io::Write;
 
-use carafe_core::{Carafe, DownloadEvent, Error, LoginEvent};
+use carafe_core::{Carafe, Error, LoginEvent, human_bytes};
 use qrcode::QrCode;
 use qrcode::render::unicode::Dense1x2;
 use serde_json::json;
@@ -84,7 +85,7 @@ pub fn status(c: &Carafe, json: bool) -> Result<(), Error> {
     Ok(())
 }
 
-pub fn library(c: &Carafe, json: bool) -> Result<(), Error> {
+pub fn owned(c: &Carafe, json: bool) -> Result<(), Error> {
     let games = c.owned_games()?;
     if json {
         let list: Vec<_> = games
@@ -105,55 +106,8 @@ pub fn library(c: &Carafe, json: bool) -> Result<(), Error> {
     for g in &games {
         let mark = if g.installed { "установлена" } else { "—" };
         let win = if g.app.windows { "" } else { "\tбез Windows-сборки" };
-        let size = g.app.size_bytes.map(size).unwrap_or_default();
+        let size = g.app.size_bytes.map(human_bytes).unwrap_or_default();
         println!("{}\t{}\t{mark}\t{size}{win}", g.app.appid, g.app.name);
     }
     Ok(())
-}
-
-pub fn install(c: &Carafe, appid: u32, json: bool) -> Result<(), Error> {
-    let tty = std::io::stderr().is_terminal();
-    let mut last = 0;
-    let r = c.steam_download(
-        appid,
-        None,
-        &mut |e| match (e, json) {
-            (DownloadEvent::Depot { depotid, files, total, .. }, true) => {
-                emit(json!({ "event": "depot", "depotid": depotid, "files": files, "total": total }))
-            }
-            (DownloadEvent::Progress { downloaded, total }, true) => {
-                emit(json!({ "event": "progress", "downloaded": downloaded, "total": total }))
-            }
-            (DownloadEvent::Depot { depotid, files, total, .. }, false) => {
-                eprintln!("==> депо {depotid}: файлов {files}, {}", size(total))
-            }
-            (DownloadEvent::Progress { downloaded, total }, false) => {
-                let pct = (downloaded * 100).checked_div(total).unwrap_or(100);
-                if tty {
-                    eprint!("\r  {pct:>3}%  {} из {}   ", size(downloaded), size(total));
-                } else if pct >= last + 10 || downloaded == total {
-                    // Без терминала — не чаще чем раз в 10 %.
-                    last = pct;
-                    eprintln!("  {pct}%");
-                }
-            }
-        },
-        None,
-    )?;
-    if tty && !json {
-        eprintln!();
-    }
-    if json {
-        emit(json!({ "event": "done", "downloaded": r.downloaded, "files": r.files, "unchanged": r.unchanged }));
-    } else {
-        eprintln!("==> готово: файлов {}, без изменений {}", r.files, r.unchanged);
-    }
-    Ok(())
-}
-
-fn size(b: u64) -> String {
-    match b {
-        b if b >= 1_000_000_000 => format!("{:.1} ГБ", b as f64 / 1e9),
-        b => format!("{} МБ", b.div_ceil(1_000_000)),
-    }
 }

@@ -3,11 +3,18 @@
 mod account;
 
 use std::ffi::OsString;
+use std::io::IsTerminal;
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-use carafe_core::{BridgeState, BridgeTarget, Carafe, CloudMode, Error, parse_appid};
+use carafe_core::download::steamcmd_accounts;
+use carafe_core::{
+    AutoDownloader, BridgeState, BridgeTarget, Carafe, CloudMode, Downloader, Error, JobState, MoveKind, Queue,
+    QueueEvent, SteamCmdDownloader, human_bytes, parse_appid,
+};
 
 const USAGE: &str = "\
 Использование:
@@ -16,13 +23,23 @@ const USAGE: &str = "\
   carafe login [--json]            войти в Steam по QR из приложения Steam (без пароля)
   carafe logout                    выйти: отозвать вход и стереть его из Связки ключей
   carafe account [--json]          под каким аккаунтом вошёл (без сети)
-  carafe library [--json]          все купленные игры, установленные отмечены
   carafe steam login USER          войти в steamcmd (пароль и Steam Guard вводишь сам)
-  carafe game install APPID [--json]  скачать Windows-сборку с аккаунта из carafe login
-  carafe game install APPID USER   то же через steamcmd
+  carafe game install APPID [USER] [--to DIR]
+                                   скачать Windows-сборку (через очередь): без USER —
+                                   с аккаунта из carafe login (SteamKit2), иначе steamcmd
+  carafe game verify APPID         проверить файлы игры
+  carafe game move APPID DIR       перенести игру в другую библиотеку
   carafe game import APPID [DIR]   забрать depot, скачанный консолью Steam (download_depot)
   carafe game run APPID [ARGS...]  запустить игру (exe ищется в папке игры)
   carafe game list                 установленные игры: мост, правила облака
+  carafe game owned [--json]       все купленные игры аккаунта (после carafe login)
+  carafe library list              папки библиотек: место на диске, игры
+  carafe library add|remove DIR    добавить или убрать папку (файлы не трогаются)
+  carafe library default DIR       папка для новых установок
+  carafe library du                место по играм и библиотекам
+  carafe downloads [list]          очередь загрузок
+  carafe downloads run             скачать всё из очереди
+  carafe downloads pause|resume|cancel|top APPID
   carafe bridge build APPID|DLL    собрать мост в Steam для Mac (ачивки, лидерборды) — из soju
   carafe bridge test APPID|DLL     проверить мост на Spacewar (480) против нативного Steam
   carafe cloud status|pull|push APPID  сейвы со Steam Cloud (game run делает pull/push сам)
@@ -62,6 +79,99 @@ fn main() -> ExitCode {
             eprintln!("carafe: {e}");
             ExitCode::from(u8::try_from(e.exit_code()).unwrap_or(1))
         }
+    }
+}
+
+/// Позиционные аргументы и `--to DIR`.
+fn split_to(args: &[OsString]) -> Result<(Vec<String>, Option<PathBuf>), Fail> {
+    let mut pos = vec![];
+    let mut to = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let a = a.to_str().ok_or(Fail::Usage)?;
+        if a == "--to" {
+            to = Some(PathBuf::from(it.next().ok_or(Error::Usage("--to: нужна папка библиотеки"))?));
+        } else if let Some(v) = a.strip_prefix("--to=") {
+            to = Some(PathBuf::from(v));
+        } else if !a.is_empty() {
+            pos.push(a.to_string());
+        }
+    }
+    Ok((pos, to))
+}
+
+/// Обработать очередь загрузок, печатая прогресс. С USER — через steamcmd, без него — через
+/// аккаунт из `carafe login` (SteamKit2), если вход есть, иначе через steamcmd. Если её уже обрабатывает
+/// другой процесс (GUI), загрузка пойдёт там.
+fn run_downloads(c: &Carafe, user: Option<&str>) -> Result<(), Error> {
+    let q = Arc::new(c.queue());
+    let weak = Arc::downgrade(&q);
+    let tty = std::io::stderr().is_terminal();
+    let last = Mutex::new((Instant::now(), None));
+    q.set_listener(move |e| {
+        let Some(q) = weak.upgrade() else { return };
+        if let QueueEvent::Finished { appid, error: Some(e) } = e {
+            eprintln!("{}carafe: {appid}: {e}", if tty { "\r\x1b[K" } else { "" });
+            return;
+        }
+        let Some(j) = q.jobs().ok().and_then(|j| j.into_iter().find(|j| j.state == JobState::Active)) else { return };
+        let mut last = last.lock().expect("progress");
+        let key = (j.appid, j.stage);
+        let changed = last.1 != Some(key);
+        if !changed && last.0.elapsed() < Duration::from_millis(if tty { 250 } else { 5000 }) {
+            return;
+        }
+        if changed && tty && last.1.is_some() {
+            eprintln!();
+        }
+        *last = (Instant::now(), Some(key));
+        let stage = j.stage.map(|s| s.label()).unwrap_or("подготовка");
+        let mut line = format!("  {}: {stage}", j.name.as_deref().map(String::from).unwrap_or(j.appid.to_string()));
+        if let Some(pct) = (j.done * 100).checked_div(j.total) {
+            line += &format!(" {pct}% · {} из {}", human_bytes(j.done), human_bytes(j.total));
+        }
+        if let Some(s) = j.speed {
+            line += &format!(" · {}/с", human_bytes(s));
+        }
+        if let Some(eta) = j.eta {
+            line += &format!(" · {}", eta_text(eta));
+        }
+        if tty { eprint!("\r\x1b[K{line}") } else { eprintln!("{line}") }
+    });
+    let dl: Box<dyn Downloader> = match user {
+        None => Box::new(AutoDownloader::new(c.clone())),
+        Some(u) => Box::new(SteamCmdDownloader::new(c.clone(), Some(u.into()))),
+    };
+    let r = run_queue(&q, dl.as_ref());
+    if tty {
+        eprintln!();
+    }
+    match r {
+        Err(Error::QueueBusy) => {
+            eprintln!("==> очередь уже обрабатывает другой процесс carafe — загрузка пойдёт там");
+            Ok(())
+        }
+        r => r,
+    }
+}
+
+fn run_queue(q: &Queue, dl: &dyn Downloader) -> Result<(), Error> {
+    q.run_until_empty(dl)?;
+    let failed = q.jobs()?.into_iter().filter(|j| j.state == JobState::Failed).count();
+    if failed > 0 {
+        return Err(Error::Steam {
+            code: "failed".into(),
+            message: format!("не скачалось: {failed} (carafe downloads)"),
+        });
+    }
+    Ok(())
+}
+
+fn eta_text(secs: u64) -> String {
+    match secs {
+        s if s < 60 => format!("{s} с"),
+        s if s < 3600 => format!("{} мин", s.div_ceil(60)),
+        s => format!("{} ч {} мин", s / 3600, s % 3600 / 60),
     }
 }
 
@@ -112,12 +222,107 @@ fn run(args: &[OsString]) -> Result<i32, Fail> {
         ("login", _) => account::login(&c, json_flag(args, 1)?)?,
         ("logout", _) => account::logout(&c)?,
         ("account", _) => account::status(&c, json_flag(args, 1)?)?,
-        ("library", _) => account::library(&c, json_flag(args, 1)?)?,
-        ("game", "install") => {
+        ("game", "owned") => account::owned(&c, json_flag(args, 2)?)?,
+        ("game", "install" | "verify") => {
             let id = appid(args, 2)?;
-            match arg(args, 3) {
-                None | Some("--json") => account::install(&c, id, json_flag(args, 3)?)?,
-                Some(user) => c.game_install(id, user)?,
+            let (pos, to) = split_to(&args[3..])?;
+            let user = pos.first().map(String::as_str);
+            if sub == "verify" && (user.is_some() || to.is_some()) {
+                return Err(Fail::Usage);
+            }
+            // Пароль и Steam Guard steamcmd спросит в терминале один раз; дальше — сохранённый вход.
+            if let Some(u) = user
+                && !steamcmd_accounts(&c.config.steamcmd_dir()).iter().any(|a| a == u)
+            {
+                c.steam_login(u)?;
+            }
+            match c.enqueue_game(id, to.as_deref(), sub == "verify") {
+                Ok(job) => eprintln!("==> в очереди: {id} → {}", job.dir.display()),
+                Err(Error::AlreadyQueued(_)) => eprintln!("==> {id} уже в очереди"),
+                Err(e) => return Err(e.into()),
+            }
+            run_downloads(&c, user)?;
+        }
+        ("game", "move") => {
+            let id = appid(args, 2)?;
+            let to = PathBuf::from(need(args, 3, "нужна папка библиотеки")?);
+            let tty = std::io::stderr().is_terminal();
+            let mut last = Instant::now();
+            let (dst, kind) = c.move_game(id, &to, &std::sync::atomic::AtomicBool::new(false), &mut |p| {
+                if tty && (last.elapsed() > Duration::from_millis(200) || p.done == p.total) {
+                    last = Instant::now();
+                    let pct = (p.done * 100).checked_div(p.total).unwrap_or(100);
+                    eprint!("\r\x1b[K  {pct}% · {} из {}", human_bytes(p.done), human_bytes(p.total));
+                }
+            })?;
+            if tty && kind == MoveKind::Copy {
+                eprintln!();
+            }
+            eprintln!("==> {id} → {}", dst.display());
+        }
+        ("library", "list" | "") => {
+            for l in c.libraries()? {
+                let mark = if l.folder.default { "*" } else { " " };
+                let space = match (l.available, l.space) {
+                    (false, _) => "недоступна".to_string(),
+                    (true, Some(s)) => format!("свободно {} из {}", human_bytes(s.free), human_bytes(s.total)),
+                    (true, None) => "место: ?".into(),
+                };
+                let n = l.folder.apps.len();
+                println!("{mark} {}\t{space}\tигр: {n} ({})", l.folder.path.display(), human_bytes(l.used));
+            }
+        }
+        ("library", "add" | "remove" | "default") => {
+            let dir = PathBuf::from(need(args, 2, "нужна папка")?);
+            let dir = if dir.is_absolute() { dir } else { std::env::current_dir().unwrap_or_default().join(dir) };
+            match sub {
+                "add" => drop(c.library_add(&dir)?),
+                "remove" => c.library_remove(&dir)?,
+                _ => c.library_set_default(&dir)?,
+            }
+        }
+        ("library", "du") => {
+            let mut sum = std::collections::BTreeMap::<PathBuf, u64>::new();
+            for g in c.game_locations()? {
+                let size = if g.available { c.game_size(g.appid, true).ok() } else { g.size };
+                *sum.entry(g.library.clone()).or_default() += size.unwrap_or(0);
+                let name = g.name.or_else(|| c.cached_app_info(g.appid).and_then(|i| i.name));
+                let size = size.map(human_bytes).unwrap_or_else(|| "?".into());
+                let off = if g.available { "" } else { "\tнедоступна" };
+                println!("{}\t{}\t{size}\t{}{off}", g.appid, name.as_deref().unwrap_or("?"), g.library.display());
+            }
+            for (lib, total) in sum {
+                println!("итого\t{}\t{}", human_bytes(total), lib.display());
+            }
+        }
+        ("downloads", "list" | "") => {
+            for j in c.queue().jobs()? {
+                let state = match j.state {
+                    JobState::Queued => "ждёт",
+                    JobState::Active => "качается",
+                    JobState::Paused => "пауза",
+                    JobState::Failed => "ошибка",
+                };
+                let pct = (j.done * 100).checked_div(j.total).map(|p| format!(" {p}%")).unwrap_or_default();
+                let err = j.error.map(|e| format!("\t{e}")).unwrap_or_default();
+                println!(
+                    "{}\t{}\t{}\t{state}{pct}\t{}{err}",
+                    j.appid,
+                    j.name.as_deref().unwrap_or("?"),
+                    j.kind.as_str(),
+                    j.dir.display()
+                );
+            }
+        }
+        ("downloads", "run") => run_downloads(&c, None)?,
+        ("downloads", "pause" | "resume" | "cancel" | "top") => {
+            let id = appid(args, 2)?;
+            let q = c.queue();
+            match sub {
+                "pause" => q.pause(id)?,
+                "resume" => q.resume(id)?,
+                "cancel" => q.cancel(id)?,
+                _ => q.move_to(id, 0)?,
             }
         }
         ("game", "import") => {

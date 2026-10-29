@@ -196,7 +196,7 @@ impl Carafe {
         mode: CloudMode,
         on_entry: &mut dyn FnMut(&CloudEntry),
     ) -> Result<CloudReport> {
-        let game_dir = self.config.game_dir(appid);
+        let game_dir = self.game_dir(appid);
         let dll = game::steam_api_dll(&game_dir).ok_or(Error::NoCloud)?;
         let steamd = self.bridge_dir(&dll.original)?.join("soju-steamd");
         if !fsutil::is_executable(&steamd) {
