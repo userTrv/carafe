@@ -8,10 +8,13 @@ BOTTLES="$CARAFE_HOME/bottles"
 GAMES="$CARAFE_HOME/games"
 STEAMCMD_DIR="$CARAFE_HOME/steamcmd"
 
-# Движок по умолчанию: сборка Wine от Gcenx с D3DMetal из Apple Game Porting Toolkit 3.0.
-ENGINE_NAME="gptk-3.0-3"
-ENGINE_URL="https://github.com/Gcenx/game-porting-toolkit/releases/download/Game-Porting-Toolkit-3.0-3/game-porting-toolkit-3.0-3.tar.xz"
-ENGINE_SHA256="d377683937340f914823dbb2e1252b329cbf834ff58907d0293db8cebf0e392e"
+# Движок по умолчанию — soju из релизов userTrv/soju (engines/soju-<версия>). Запасной движок и
+# источник D3DMetal для soju: сборка Wine от Gcenx с D3DMetal из Apple Game Porting Toolkit 3.0.
+SOJU_REPO="userTrv/soju"
+GPTK_NAME="gptk-3.0-3"
+GPTK_URL="https://github.com/Gcenx/game-porting-toolkit/releases/download/Game-Porting-Toolkit-3.0-3/game-porting-toolkit-3.0-3.tar.xz"
+GPTK_SHA256="d377683937340f914823dbb2e1252b329cbf834ff58907d0293db8cebf0e392e"
+D3DMETAL_MISSING="D3DMetal не подключён: нужна своя копия Game Porting Toolkit — поставь движок GPTK как источник: carafe engine install gptk"
 STEAMCMD_URL="https://steamcdn-a.akamaihd.net/client/installer/steamcmd_osx.tar.gz"
 
 CARAFE_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -25,8 +28,13 @@ log() { echo "==> $*" >&2; }
 usage() {
   cat <<'EOF'
 Использование:
-  carafe engine install            скачать и распаковать Wine + D3DMetal
+  carafe engine install [gptk]     поставить последний soju (Wine + D3DMetal из своей копии GPTK);
+                                   gptk — прежний движок и источник D3DMetal
+  carafe engine update             поставить новый релиз soju, если вышел
+  carafe engine status             какие движки стоят, какой активен, D3DMetal
+  carafe engine use soju|gptk      сменить движок: бутылки сначала копируются рядом
   carafe bottle create [NAME]      создать префикс Wine (по умолчанию: default)
+  carafe bottle restore NAME [КОПИЯ]  вернуть бутылку из резервной копии (по умолчанию свежей)
   carafe steam login USER          войти в steamcmd (пароль и Steam Guard вводишь сам)
   carafe game install APPID USER   скачать Windows-сборку игры через steamcmd
   carafe game import APPID [DIR]   забрать depot, скачанный консолью Steam (download_depot)
@@ -44,20 +52,73 @@ usage() {
 EOF
 }
 
-# CARAFE_ENGINE_DIR — свой движок вместо скачанного, например собранный soju (dist/soju-engine).
-engine_dir() { echo "${CARAFE_ENGINE_DIR:-$ENGINES/$ENGINE_NAME}"; }
+# --- движки ---
+# engines/current — имя каталога активного движка (пишут engine use и первая установка soju).
+# CARAFE_ENGINE_DIR — свой движок вместо скачанного, он главнее, например dist/soju-engine из soju.
 
-wine_bin() {
-  local d; d="$(engine_dir)"
+# Бутылки: каталоги с drive_c, кроме резервных копий (.backup-) и заменённых (.replaced-).
+bottle_names() {
+  local d n
+  for d in "$BOTTLES"/*; do
+    n="${d##*/}"
+    [[ "$n" == .* || "$n" == *.backup-* || "$n" == *.replaced-* ]] && continue
+    [[ -d "$d/drive_c" ]] && echo "$n"
+  done
+  return 0
+}
+
+# Самый новый установленный soju (engines/soju-<версия> с исполняемым bin/soju).
+newest_soju() { newest_soju_all | head -1; }
+
+chosen_engine() {
+  local s
+  s="$(tr -d '[:space:]' 2>/dev/null < "$ENGINES/current")" || return 1
+  [[ -n "$s" && "$s" != .* && "$s" != */* ]] && echo "$s"
+}
+
+# Активный движок: «источник|каталог». Источник: env, chosen, legacy (GPTK и бутылки, выбора не
+# было — пользователь до soju, молча не переключаем) или default.
+active_engine() {
+  if [[ -n "${CARAFE_ENGINE_DIR:-}" ]]; then echo "env|$CARAFE_ENGINE_DIR"; return; fi
+  local cur gptk="$ENGINES/$GPTK_NAME" soju
+  if cur="$(chosen_engine)"; then echo "chosen|$ENGINES/$cur"; return; fi
+  if [[ -d "$gptk" && -n "$(bottle_names)" ]]; then echo "legacy|$gptk"; return; fi
+  soju="$(newest_soju)"
+  if [[ -n "$soju" ]]; then echo "default|$soju"
+  elif [[ -d "$gptk" ]]; then echo "default|$gptk"
+  else echo "default|$ENGINES/soju"
+  fi
+}
+
+engine_dir() { local a; a="$(active_engine)"; echo "${a#*|}"; }
+
+# Для людей: «soju 26.3.0», «GPTK 3.0».
+engine_label() {
+  local n="${1##*/}" v
+  case "$n" in
+    soju-engine) echo soju ;;
+    soju-*) echo "soju ${n#soju-}" ;;
+    gptk-*) v="${n#gptk-}"; echo "GPTK ${v%-*}" ;;
+    *) echo "$n" ;;
+  esac
+}
+
+has_d3dmetal() {
+  [[ -f "$1/lib/external/libd3dshared.dylib" ]] || [[ -n "$(find "$1" -maxdepth 8 -type d -name D3DMetal.framework -print -quit 2>/dev/null)" ]]
+}
+
+# wine движка: bin/soju — wine движка soju с его настройками (msync, D3DMetal).
+wine_in() {
+  local d="$1" w name
   [[ -d "$d" ]] || die "движок не установлен: carafe engine install"
-  local w
-  # bin/soju — wine движка soju с его настройками (msync, D3DMetal).
   for name in soju wine64 wine; do
     w="$(find "$d" -type f -path "*/bin/$name" -perm -u+x 2>/dev/null | head -1)"
     [[ -n "$w" ]] && { echo "$w"; return; }
   done
   die "не нашёл bin/wine в $d"
 }
+
+wine_bin() { wine_in "$(engine_dir)"; }
 
 wine_env() {
   local bottle="${CARAFE_BOTTLE:-default}"
@@ -70,23 +131,403 @@ wine_env() {
   export PATH="$bin:$PATH"
 }
 
-cmd_engine_install() {
-  local dl="$ENGINES/dl" tarball="$ENGINES/dl/${ENGINE_URL##*/}"
+set_current() { mkdir -p "$ENGINES"; echo "$1" > "$ENGINES/current.tmp.$$" && mv "$ENGINES/current.tmp.$$" "$ENGINES/current"; }
+
+# json ФАЙЛ ПУТЬ — значение из JSON (plutil есть в любой macOS).
+json() { plutil -extract "$2" raw -o - "$1" 2>/dev/null; }
+
+safe_name() { [[ "$1" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; }
+
+# Последний релиз движка soju: печатает «версия индекс», список релизов — в файле $1.
+# Теги engine-v*, без черновиков и предрелизов, самая новая версия (а не дата).
+soju_latest_release() {
+  local body="$1" hdr code reset i tag v
+  hdr="$(curl -sS -L --retry 3 -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' \
+    -D - -w '\n%{http_code}' -o "$body" "https://api.github.com/repos/$SOJU_REPO/releases?per_page=50")" \
+    || die "GitHub: нет связи с api.github.com"
+  code="$(printf '%s\n' "$hdr" | awk 'NF { l = $0 } END { print l }' | tr -d '\r')"
+  case "$code" in
+    200) ;;
+    403|429)
+      if [[ "$code" == 429 ]] || grep -q 'rate limit' "$body"; then
+        reset="$(printf '%s\n' "$hdr" | tr -d '\r' | awk -F': *' 'tolower($1) == "x-ratelimit-reset" { print $2 }')"
+        if [[ "$reset" =~ ^[0-9]+$ ]]; then
+          die "GitHub ограничил запросы без токена — повтори через $(( (reset - $(date +%s) + 59) / 60 > 0 ? (reset - $(date +%s) + 59) / 60 : 1 )) мин"
+        fi
+        die "GitHub ограничил запросы без токена — повтори позже"
+      fi
+      die "GitHub: HTTP $code" ;;
+    *) die "GitHub: https://api.github.com/repos/$SOJU_REPO/releases: HTTP $code" ;;
+  esac
+  for ((i = 0; ; i++)); do
+    tag="$(json "$body" "$i.tag_name")" || break
+    [[ "$(json "$body" "$i.draft")" == true || "$(json "$body" "$i.prerelease")" == true ]] && continue
+    [[ "$tag" == engine-v* ]] || continue
+    v="${tag#engine-v}"
+    if safe_name "$v"; then echo "$v $i"; fi
+  done | sort -rV -k1,1 | head -1 | grep . || die "в $SOJU_REPO нет релизов движка (engine-v*)"
+}
+
+# asset_url ФАЙЛ-РЕЛИЗОВ ИНДЕКС ИМЯ
+asset_url() {
+  local j name
+  for ((j = 0; ; j++)); do
+    name="$(json "$1" "$2.assets.$j.name")" || break
+    [[ "$name" == "$3" ]] && { json "$1" "$2.assets.$j.browser_download_url"; return; }
+  done
+  die "в релизе $(json "$1" "$2.tag_name") нет файла $3"
+}
+
+# Подключить D3DMetal из копии GPTK пользователя: сначала движок GPTK этого carafe, иначе
+# soju-d3dmetal ищет сам (/Applications, /Volumes, CrossOver). Не вышло — движок без D3DMetal.
+connect_d3dmetal() {
+  local dir="$1" tool="${2:-bin/soju-d3dmetal}" src="" g
+  for g in "$ENGINES"/gptk-*/"Game Porting Toolkit.app"; do
+    [[ -d "$g" ]] && has_d3dmetal "${g%/*}" && { src="$g"; break; }
+  done
+  log "подключаю D3DMetal"
+  if "$dir/$tool" "$src" "$dir" </dev/null >&2 && has_d3dmetal "$dir"; then return 0; fi
+  log "$D3DMETAL_MISSING"
+  return 1
+}
+
+# Новый пользователь получает soju активным; пользователь до soju (GPTK и бутылки, выбора не было)
+# остаётся на GPTK, пока не скажет engine use soju. Выбранный раньше soju переезжает на свежую версию.
+adopt_soju() {
+  local name="${1##*/}" cur adopt=0
+  if cur="$(chosen_engine)"; then
+    [[ "$cur" != "$name" && "$cur" == soju-* ]] && adopt=1
+  else
+    [[ "$(CARAFE_ENGINE_DIR='' active_engine)" == legacy\|* ]] || adopt=1
+  fi
+  if [[ "$adopt" == 1 ]]; then
+    set_current "$name"
+    log "активный движок: $(engine_label "$1")"
+  elif [[ "$(chosen_engine || true)" != "$name" ]]; then
+    log "активным остаётся GPTK — перейти: carafe engine use soju"
+  fi
+}
+
+soju_installed() {
+  has_d3dmetal "$1" || connect_d3dmetal "$1" "$2" || true
+  adopt_soju "$1"
+}
+
+# Поставить последний релиз soju: engine.json → архив с докачкой → размер и sha256 → распаковка во
+# временный каталог → одно переименование в engines/soju-<версия>. mode: install|update.
+soju_install() {
+  local mode="$1" dl="$ENGINES/dl" rel ver idx dir m
   mkdir -p "$dl"
-  if [[ ! -f "$tarball" ]]; then
-    log "качаю движок ${ENGINE_URL##*/}"
-    curl -fL --retry 5 -C - -o "$tarball.part" "$ENGINE_URL"
+  local releases="$dl/.releases-$$.json"
+  rel="$(soju_latest_release "$releases")" || { rm -f "$releases"; exit 1; }
+  ver="${rel% *}" idx="${rel#* }"
+  dir="$ENGINES/soju-$ver"
+  if [[ -x "$dir/bin/soju" ]]; then
+    rm -f "$releases"
+    if [[ "$mode" == update ]]; then log "новых версий soju нет: $ver уже стоит"; else log "soju $ver уже установлен"; fi
+    soju_installed "$dir" bin/soju-d3dmetal
+    return
+  fi
+  log "soju $ver: $(json "$releases" "$idx.tag_name")"
+  m="$dl/engine-$ver.json"
+  curl -fsSL --retry 3 -o "$m" "$(asset_url "$releases" "$idx" engine.json)" || die "не скачал engine.json"
+  local format archive root sha size unpacked arch min tool url
+  format="$(json "$m" format || echo '?')"
+  [[ "$format" == 1 ]] || die "engine.json: формат $format этот carafe не понимает — обнови carafe"
+  archive="$(json "$m" archive || true)" root="$(json "$m" root || true)" sha="$(json "$m" sha256 || true)"
+  size="$(json "$m" size || true)" unpacked="$(json "$m" unpacked_size || echo 0)"
+  arch="$(json "$m" arch || true)" min="$(json "$m" macos_min || true)"
+  tool="$(json "$m" d3dmetal.install || echo bin/soju-d3dmetal)"
+  [[ "$(json "$m" version)" == "$ver" ]] || die "engine.json: версия $(json "$m" version) в релизе engine-v$ver"
+  safe_name "$archive" || die "engine.json: archive: «$archive» — не имя файла"
+  safe_name "$root" || die "engine.json: root: «$root» — не имя файла"
+  [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || die "engine.json: sha256: нужно 64 шестнадцатеричных знака"
+  [[ "$size" =~ ^[0-9]+$ && "$size" -gt 0 ]] || die "engine.json: size: «$size»"
+  [[ "$unpacked" =~ ^[0-9]+$ ]] || unpacked=0
+  [[ "$tool" != /* && "/$tool/" != */../* ]] || die "engine.json: d3dmetal.install: «$tool» — не путь внутри движка"
+  case "$arch" in
+    x86_64) if [[ "$(sysctl -n hw.optional.arm64 2>/dev/null)" == 1 ]] && ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+              die "engine.json: движку нужна Rosetta 2: softwareupdate --install-rosetta"
+            fi ;;
+    arm64) [[ "$(sysctl -n hw.optional.arm64 2>/dev/null)" == 1 ]] || die "engine.json: движок для arm64, а этот Mac — другой" ;;
+    *) die "engine.json: движок для $arch, а этот Mac — другой" ;;
+  esac
+  local os; os="$(sw_vers -productVersion)"
+  [[ "$(printf '%s\n%s\n' "$min" "$os" | sort -V | head -1)" == "$min" ]] || die "engine.json: нужна macOS $min или новее, здесь $os"
+  local free need
+  free="$(df -k -P "$ENGINES" | awk 'NR == 2 { print $4 }')"
+  [[ "$unpacked" -gt 0 ]] || unpacked=$((size * 3))
+  need=$(( (size + unpacked) / 1024 ))
+  [[ -z "$free" || "$need" -le "$free" ]] || die "мало места: нужно $((need / 1024)) МБ, свободно $((free / 1024)) МБ"
+  url="$(asset_url "$releases" "$idx" "$archive")"
+  rm -f "$releases"
+
+  local tarball="$dl/$archive" got
+  if [[ "$(stat -f %z "$tarball" 2>/dev/null)" != "$size" ]]; then
+    # Недокачанный кусок больше архива — мусор от другой версии, с ним докачка не сойдётся.
+    [[ "$(stat -f %z "$tarball.part" 2>/dev/null || echo 0)" -le "$size" ]] || rm -f "$tarball.part"
+    log "качаю движок $archive ($((size / 1000000)) МБ)"
+    curl -fL --retry 5 -C - -o "$tarball.part" "$url"
     mv "$tarball.part" "$tarball"
   fi
-  echo "$ENGINE_SHA256  $tarball" | shasum -a 256 -c - >/dev/null || die "sha256 архива не совпал"
-  local d; d="$(engine_dir)"
+  got="$(stat -f %z "$tarball")"
+  [[ "$got" == "$size" ]] || { rm -f "$tarball"; die "размер архива не совпал: ждали $size, скачано $got"; }
+  echo "$sha  $tarball" | shasum -a 256 -c - >/dev/null 2>&1 || { rm -f "$tarball"; die "sha256 архива не совпал"; }
+
+  # Точка в начале: недораспакованный движок не попадёт в список установленных.
+  local tmp="$ENGINES/.soju-$ver.tmp"
+  rm -rf "$tmp" && mkdir -p "$tmp"
+  log "распаковываю в $dir"
+  tar -xJf "$tarball" -C "$tmp" || { rm -rf "$tmp"; die "не распаковал $archive"; }
+  [[ -x "$tmp/$root/bin/soju" ]] || { rm -rf "$tmp"; die "в архиве движка нет $root/bin/soju"; }
+  # Карантин macOS блокирует запуск скачанных бинарников.
+  xattr -dr com.apple.quarantine "$tmp/$root" 2>/dev/null || true
+  rm -rf "$dir" && mv "$tmp/$root" "$dir"
+  rm -rf "$tmp"
+  # Архив своё отработал: движок распакован, а повторная установка скачает его заново.
+  rm -f "$tarball" "$m"
+  log "готово: $dir/bin/soju"
+  soju_installed "$dir" "$tool"
+}
+
+# Прежний движок GPTK: запасной и источник D3DMetal. Ставится — подключается к soju без D3DMetal.
+gptk_install() {
+  local dl="$ENGINES/dl" tarball="$ENGINES/dl/${GPTK_URL##*/}" d="$ENGINES/$GPTK_NAME" s
+  mkdir -p "$dl"
+  if [[ ! -f "$tarball" ]]; then
+    log "качаю движок ${GPTK_URL##*/}"
+    curl -fL --retry 5 -C - -o "$tarball.part" "$GPTK_URL"
+    mv "$tarball.part" "$tarball"
+  fi
+  echo "$GPTK_SHA256  $tarball" | shasum -a 256 -c - >/dev/null || die "sha256 архива не совпал"
   rm -rf "$d.tmp" && mkdir -p "$d.tmp"
   log "распаковываю в $d"
   tar -xJf "$tarball" -C "$d.tmp"
   # Карантин macOS блокирует запуск скачанных бинарников.
   xattr -dr com.apple.quarantine "$d.tmp" 2>/dev/null || true
   rm -rf "$d" && mv "$d.tmp" "$d"
-  log "готово: $(wine_bin)"
+  log "готово: $(wine_in "$d")"
+  for s in "$ENGINES"/soju-*; do
+    [[ -x "$s/bin/soju" ]] && ! has_d3dmetal "$s" && { connect_d3dmetal "$s" || true; }
+  done
+  return 0
+}
+
+cmd_engine_install() {
+  case "${1:-soju}" in
+    soju) soju_install install ;;
+    gptk) gptk_install ;;
+    *) die "движок «$1»: бывает soju или gptk" ;;
+  esac
+}
+
+cmd_engine_status() {
+  local a src dir from="" state="" d mark e
+  a="$(active_engine)" src="${a%%|*}" dir="${a#*|}"
+  case "$src" in
+    env) from=" (CARAFE_ENGINE_DIR)" ;;
+    legacy) from=" (прежний — выбора не было)" ;;
+    default) from=" (по умолчанию)" ;;
+  esac
+  local ready=0
+  ( wine_in "$dir" ) >/dev/null 2>&1 && ready=1
+  [[ "$ready" == 1 ]] || state=" — не установлен"
+  printf 'движок: %s%s%s\t%s\n' "$(engine_label "$dir")" "$from" "$state" "$dir"
+  if [[ "$ready" == 1 ]]; then
+    if has_d3dmetal "$dir"; then echo "D3DMetal: подключён"; else echo "D3DMetal: не подключён"; fi
+  fi
+  { newest_soju_all; if [[ -d "$ENGINES/$GPTK_NAME" ]]; then echo "$ENGINES/$GPTK_NAME"; fi; } | while IFS= read -r d; do
+    [[ -n "$d" ]] || continue
+    mark=" "; [[ "$d" == "$dir" ]] && mark="*"
+    e="без D3DMetal"; has_d3dmetal "$d" && e="D3DMetal"
+    printf '%s %s\t%s\t%s\n' "$mark" "$(engine_label "$d")" "$e" "$d"
+  done
+  if [[ "$src" != env && "${dir##*/}" == gptk-* ]]; then
+    if [[ -n "$(newest_soju)" ]]; then
+      log "движок по умолчанию теперь soju — перейти: carafe engine use soju (бутылки сначала копируются рядом)"
+    else
+      log "движок по умолчанию теперь soju — поставить: carafe engine install, потом carafe engine use soju"
+    fi
+  elif [[ "$ready" != 1 ]]; then
+    log "движок не установлен: carafe engine install"
+  fi
+  [[ "$ready" == 1 ]] && ! has_d3dmetal "$dir" && log "$D3DMETAL_MISSING"
+  return 0
+}
+
+# Все установленные soju, от новых к старым.
+newest_soju_all() {
+  local d
+  for d in "$ENGINES"/soju-*; do
+    if [[ -x "$d/bin/soju" ]]; then echo "${d##*/soju-} $d"; fi
+  done | sort -rV -k1,1 | cut -d' ' -f2-
+}
+
+# --- бутылки при смене движка ---
+# Ничего не удаляется: заменённая бутылка уходит в <имя>.replaced-<дата>, копии остаются.
+
+# Жив ли wineserver префикса: Wine держит сокет в /tmp/.wine-<uid>/server-<dev>-<inode префикса>/,
+# а сам сервер — открытые lock и socket там же. Сокет остаётся и после падения сервера.
+wineserver_alive() {
+  local dev ino uid dir
+  read -r dev ino uid < <(stat -f '%d %i %u' "$1" 2>/dev/null) || return 1
+  dir="/tmp/.wine-$uid/server-$(printf %x "$dev")-$(printf %x "$ino")"
+  [[ -e "$dir/socket" ]] || return 1
+  [[ -n "$(lsof -t "$dir/lock" "$dir/socket" 2>/dev/null)" ]]
+}
+
+bottle_engine() {
+  local s
+  s="$(tr -d '[:space:]' 2>/dev/null < "$BOTTLES/$1/.carafe-engine")" || return 1
+  [[ -n "$s" ]] && echo "$s"
+}
+
+# Свободное имя <база><дата> (с -2, -3, если в эту секунду уже есть).
+free_name() {
+  local base="$BOTTLES/$1$(date +%Y%m%d-%H%M%S)" p n=2
+  p="$base"
+  while [[ -e "$p" || -L "$p" ]]; do p="$base-$n"; n=$((n + 1)); done
+  echo "$p"
+}
+
+# Копия каталога: клон APFS (cp -c, мгновенно и без места), иначе обычная после проверки места.
+clone_tree() {
+  cp -ac "$1" "$2" 2>/dev/null && return 0
+  rm -rf "$2"
+  local need free
+  need="$(du -sk "$1" | cut -f1)" free="$(df -k -P "$(dirname "$2")" | awk 'NR == 2 { print $4 }')"
+  (( need + 1048576 <= free )) || die "мало места: нужно $((need / 1024)) МБ, свободно $((free / 1024)) МБ"
+  cp -a "$1" "$2" || { rm -rf "$2"; return 1; }
+}
+
+# Резервная копия бутылки рядом: bottles/<имя>.backup-<дата>. Печатает путь.
+bottle_backup() {
+  local src="$BOTTLES/$1" dst
+  [[ -d "$src/drive_c" ]] || die "нет бутылки $1"
+  dst="$(free_name "$1.backup-")"
+  log "$1: резервная копия → $dst"
+  clone_tree "$src" "$dst"
+  echo "$dst"
+}
+
+# Убрать бутылку в .replaced-… и склонировать на её место копию.
+restore_from() {
+  local name="$1" from="$2" dst="$BOTTLES/$1" replaced=""
+  if [[ -e "$dst" || -L "$dst" ]]; then
+    replaced="$(free_name "$name.replaced-")"
+    mv "$dst" "$replaced"
+  fi
+  log "$name: возвращаю из $from"
+  if ! clone_tree "$from" "$dst"; then
+    [[ -n "$replaced" ]] && mv "$replaced" "$dst"
+    return 1
+  fi
+  [[ -n "$replaced" ]] && log "$name: прежняя бутылка — $replaced"
+  return 0
+}
+
+cmd_bottle_restore() {
+  local name="${1:?нужно имя бутылки}" want="${2:-}" from="" b e
+  for b in "$BOTTLES/$name".backup-*; do
+    [[ -d "$b/drive_c" ]] || continue
+    if [[ -z "$want" || "${b##*/}" == "$want" || "${b##*/}" == "$name.backup-$want" ]]; then from="$b"; fi
+  done
+  [[ -n "$from" ]] || die "у бутылки $name нет резервных копий"
+  wineserver_alive "$BOTTLES/$name" && die "в бутылке $name что-то запущено (жив её wineserver) — закрой игру и повтори"
+  restore_from "$name" "$from" || die "не вернул $name из $from"
+  e="$(tr -d '[:space:]' 2>/dev/null < "$from/.carafe-engine" || true)"
+  [[ -n "$e" ]] && log "копия сделана на движке $(engine_label "$e")"
+  return 0
+}
+
+users_of() { { find "$1/drive_c/users" -mindepth 1 -maxdepth 1 -type d ! -name Public -exec basename {} \; 2>/dev/null || true; } | sort; }
+
+# Ждать команду не дольше СЕКУНД; не уложилась — SIGKILL и код 124.
+run_limited() {
+  local secs="$1" what="$2" pid i
+  shift 2
+  "$@" </dev/null &
+  pid=$!
+  for ((i = 0; i < secs * 5; i++)); do kill -0 "$pid" 2>/dev/null || break; sleep 0.2; done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    log "$what не закончил за $secs с"
+    return 124
+  fi
+  wait "$pid"
+}
+
+# wineboot -u движком ДВИЖОК, затем wineserver -w. Если новый движок завёл другого пользователя
+# Windows, сейвы (AppData, Documents, Saved Games) копируются к нему без замены файлов.
+bottle_upgrade() {
+  local name="$1" engine="$2" prefix="$BOTTLES/$1" before after old="" u d t0=$SECONDS
+  before="$(users_of "$prefix")"
+  log "$name: wineboot -u ($(engine_label "$engine"))"
+  if ! (CARAFE_ENGINE_DIR="$engine" CARAFE_BOTTLE="$name"; wine_env
+        run_limited 600 "wineboot -u" "$(wine_bin)" wineboot -u >&2 && run_limited 600 "wineserver -w" wineserver -w); then
+    # Этот wineserver запустили мы сами: перед переездом префикс был свободен.
+    (CARAFE_ENGINE_DIR="$engine" CARAFE_BOTTLE="$name"; wine_env; wineserver -k) 2>/dev/null || true
+    return 1
+  fi
+  log "$name: обновлена за $((SECONDS - t0)) с"
+  after="$(users_of "$prefix")"
+  if grep -qx crossover <<<"$before"; then old=crossover; else old="$(head -1 <<<"$before")"; fi
+  if [[ -n "$old" ]]; then
+    while IFS= read -r u; do
+      [[ -n "$u" ]] && ! grep -qxF "$u" <<<"$before" || continue
+      for d in AppData Documents "Saved Games"; do
+        # Ссылки на папки Mac (Documents → ~/Documents) не раскрываем: это не сейвы префикса.
+        [[ -d "$prefix/drive_c/users/$old/$d" && ! -L "$prefix/drive_c/users/$old/$d" ]] || continue
+        [[ -L "$prefix/drive_c/users/$u/$d" ]] && continue
+        mkdir -p "$prefix/drive_c/users/$u/$d"
+        rsync -a --ignore-existing "$prefix/drive_c/users/$old/$d/" "$prefix/drive_c/users/$u/$d/"
+      done
+      log "$name: сейвы users/$old → users/$u"
+    done <<<"$after"
+  fi
+  echo "${engine##*/}" > "$prefix/.carafe-engine"
+}
+
+# engine use soju|gptk: каждая бутылка, которую последним обновлял другой движок, сначала
+# копируется рядом, потом обновляется новым движком. Не вышло — бутылки возвращаются из копий.
+cmd_engine_use() {
+  local kind="${1:?нужен движок: soju или gptk}" target prev b bk i
+  case "$kind" in
+    soju) target="$(newest_soju)"; [[ -n "$target" ]] || die "soju не установлен: carafe engine install" ;;
+    gptk) target="$ENGINES/$GPTK_NAME"; ( wine_in "$target" ) >/dev/null 2>&1 || die "GPTK не установлен: carafe engine install gptk" ;;
+    *) die "движок «$kind»: бывает soju или gptk" ;;
+  esac
+  [[ -n "${CARAFE_ENGINE_DIR:-}" ]] && log "задан CARAFE_ENGINE_DIR — пока он есть, запуск идёт на нём"
+  prev="$(CARAFE_ENGINE_DIR='' engine_dir)"
+  local todo=() done=() backups=()
+  while IFS= read -r b; do
+    [[ -n "$b" ]] || continue
+    [[ "$(bottle_engine "$b" || echo "${prev##*/}")" == "${target##*/}" ]] || todo+=("$b")
+  done < <(bottle_names)
+  for b in ${todo[@]+"${todo[@]}"}; do
+    wineserver_alive "$BOTTLES/$b" && die "в бутылке $b что-то запущено (жив её wineserver) — закрой игру и повтори"
+  done
+  for b in ${todo[@]+"${todo[@]}"}; do
+    bk="$(bottle_backup "$b")"
+    if ! bottle_upgrade "$b" "$target"; then
+      log "не вышло — возвращаю бутылки из резервных копий"
+      done+=("$b") backups+=("$bk")
+      for ((i = 0; i < ${#done[@]}; i++)); do
+        restore_from "${done[$i]}" "${backups[$i]}" || log "${done[$i]}: не вернул, копия цела: ${backups[$i]}"
+      done
+      die "не обновил бутылку $b движком $(engine_label "$target")"
+    fi
+    done+=("$b") backups+=("$bk")
+  done
+  set_current "${target##*/}"
+  log "активный движок: $(engine_label "$target")"
+  if [[ ${#done[@]} -gt 0 ]]; then
+    for ((i = 0; i < ${#done[@]}; i++)); do log "${done[$i]}: резервная копия ${backups[$i]}"; done
+    local other=gptk; [[ "$kind" == gptk ]] && other=soju
+    log "откат: carafe engine use $other; бутылку целиком: carafe bottle restore ИМЯ"
+  fi
+  has_d3dmetal "$target" || log "$D3DMETAL_MISSING"
+  return 0
 }
 
 cmd_bottle_create() {
@@ -98,6 +539,8 @@ cmd_bottle_create() {
   # Windows 10 — то, что ждут современные Unity-игры.
   "$(wine_bin)" reg add 'HKCU\Software\Wine' /v Version /d win10 /f >/dev/null
   wineserver -w
+  local e; e="$(engine_dir)"
+  echo "${e##*/}" > "$WINEPREFIX/.carafe-engine"
   log "префикс готов"
 }
 
@@ -319,8 +762,20 @@ cmd_game_run() {
 cmd_wine() { wine_env; exec "$(wine_bin)" "$@"; }
 
 case "${1:-}" in
-  engine) [[ "${2:-}" == install ]] || { usage; exit 1; }; cmd_engine_install ;;
-  bottle) [[ "${2:-}" == create ]] || { usage; exit 1; }; cmd_bottle_create "${3:-}" ;;
+  engine)
+    case "${2:-}" in
+      install) cmd_engine_install "${3:-}" ;;
+      update) soju_install update ;;
+      status) cmd_engine_status ;;
+      use) cmd_engine_use "${3:-}" ;;
+      *) usage; exit 1 ;;
+    esac ;;
+  bottle)
+    case "${2:-}" in
+      create) cmd_bottle_create "${3:-}" ;;
+      restore) cmd_bottle_restore "${3:-}" "${4:-}" ;;
+      *) usage; exit 1 ;;
+    esac ;;
   steam)
     [[ "${2:-}" == login ]] || { usage; exit 1; }
     # Пароль в аргументах оседает в истории шелла и в ps — не принимаем.

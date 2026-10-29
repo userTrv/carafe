@@ -18,12 +18,12 @@ use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use carafe_core::{
-    AutoDownloader, Carafe, Config, GameLocation, JobKind, JobState, LoginEvent, Queue,
+    AutoDownloader, Carafe, Config, GameLocation, InstalledEngine, JobKind, JobState, LoginEvent,
+    Queue,
 };
 
 use crate::backend::*;
 
-const DEFAULT_ENGINE: &str = "gptk-3.0-3";
 const CLOUD_TIMEOUT: Duration = Duration::from_secs(90);
 
 pub struct CliBackend {
@@ -103,11 +103,46 @@ impl CliBackend {
         loc.library.display().to_string()
     }
 
+    /// Движок из настроек или активный движок carafe (`engines/current`, soju по умолчанию).
     fn engine_dir(&self, profile: &Profile) -> PathBuf {
         match &profile.engine {
             Some(id) => PathBuf::from(id),
-            None => self.home.join("engines").join(DEFAULT_ENGINE),
+            None => self.core.config.engine_dir(),
         }
+    }
+
+    /// `bin/carafe engine install [gptk]`: прогресс curl и этапы «скачиваю» → «распаковываю».
+    fn run_install(&self, args: &[&str], profile: &Profile, events: Events) -> Result<()> {
+        stage_ev(events, Stage::Download, StageStatus::Active);
+        let mut unpacking = false;
+        let (code, lines) = self.run(args, profile, None, |l| {
+            if let Some(p) = curl_percent(l) {
+                events(TaskEvent::Progress {
+                    stage: Stage::Download,
+                    fraction: p,
+                });
+                return;
+            }
+            if !unpacking && l.starts_with("==> распаковываю") {
+                unpacking = true;
+                stage_ev(events, Stage::Download, StageStatus::Done);
+                stage_ev(events, Stage::Unpack, StageStatus::Active);
+            }
+            events(TaskEvent::Log { line: l.into() });
+        })?;
+        if !unpacking && code == 0 {
+            stage_ev(events, Stage::Download, StageStatus::Done);
+        }
+        finish_stage(
+            events,
+            if unpacking {
+                Stage::Unpack
+            } else {
+                Stage::Download
+            },
+            code,
+            &lines,
+        )
     }
 
     fn env(&self, profile: &Profile) -> Vec<(&'static str, String)> {
@@ -252,8 +287,8 @@ impl Backend for CliBackend {
             Check {
                 id: CheckId::D3dMetal,
                 ok: d3d,
-                fixable: !custom,
-                hint: custom.then(|| "soju: scripts/install-d3dmetal.sh".into()),
+                fixable: !custom && engine_ok,
+                hint: custom.then(|| "soju: bin/soju-d3dmetal".into()),
             },
             Check {
                 id: CheckId::Bottle,
@@ -278,33 +313,39 @@ impl Backend for CliBackend {
             },
         ];
 
-        let mut engines = Vec::new();
-        for dir in subdirs(&self.home.join("engines")) {
-            if dir.file_name().is_some_and(|n| n == "dl") {
-                continue;
-            }
-            engines.push(engine_info(&dir));
-        }
+        let status = self.core.engine_status();
+        let mut engines: Vec<EngineInfo> = status.installed.iter().map(engine_info).collect();
         let soju_engine = self.soju.join("dist/soju-engine");
         if wine_in(&soju_engine) {
-            engines.push(engine_info(&soju_engine));
+            engines.push(engine_info(&InstalledEngine::of(&soju_engine)));
         }
-        // id движка по умолчанию — None в профиле; в списке он идёт первым.
-        let default = self.home.join("engines").join(DEFAULT_ENGINE);
-        engines.sort_by_key(|e| Path::new(&e.id) != default);
-        if let Some(e) = engines.first_mut().filter(|e| Path::new(&e.id) == default) {
+        // id активного движка — None в профиле; в списке он идёт первым.
+        let active = status.active.dir.display().to_string();
+        engines.sort_by_key(|e| e.id != active);
+        if let Some(e) = engines.first_mut().filter(|e| e.id == active) {
             e.id = String::new();
         }
-
-        let bottles = subdirs(&self.home.join("bottles"))
-            .iter()
-            .filter_map(|p| p.file_name()?.to_str().map(String::from))
-            .collect();
+        let shown = if custom {
+            InstalledEngine::of(&engine)
+        } else {
+            status.active.clone()
+        };
+        let engine_state = EngineState {
+            label: shown.label(),
+            kind: shown.kind.map(kind_of),
+            ready: engine_ok,
+            d3dmetal: d3d,
+            custom,
+            soju: status.soju().map(InstalledEngine::label),
+            gptk: status.gptk().map(InstalledEngine::label),
+            suggest_soju: !custom && status.suggest_soju(),
+        };
 
         Ok(Environment {
             checks,
             engines,
-            bottles,
+            bottles: self.core.bottles(),
+            engine: Some(engine_state),
         })
     }
 
@@ -421,36 +462,24 @@ impl Backend for CliBackend {
     }
 
     fn install_engine(&self, profile: &Profile, events: Events) -> Result<()> {
-        stage_ev(events, Stage::Download, StageStatus::Active);
-        let mut unpacking = false;
-        let (code, lines) = self.run(&["engine", "install"], profile, None, |l| {
-            if let Some(p) = curl_percent(l) {
-                events(TaskEvent::Progress {
-                    stage: Stage::Download,
-                    fraction: p,
-                });
-                return;
-            }
-            if !unpacking && l.starts_with("==> распаковываю") {
-                unpacking = true;
-                stage_ev(events, Stage::Download, StageStatus::Done);
-                stage_ev(events, Stage::Unpack, StageStatus::Active);
-            }
+        self.run_install(&["engine", "install"], profile, events)
+    }
+
+    fn install_gptk(&self, profile: &Profile, events: Events) -> Result<()> {
+        self.run_install(&["engine", "install", "gptk"], profile, events)
+    }
+
+    fn use_engine(&self, kind: EngineKind, profile: &Profile, events: Events) -> Result<()> {
+        stage_ev(events, Stage::Migrate, StageStatus::Active);
+        // Движок из настроек здесь ни при чём: меняется активный движок carafe.
+        let profile = Profile {
+            engine: None,
+            ..profile.clone()
+        };
+        let (code, lines) = self.run(&["engine", "use", kind.as_str()], &profile, None, |l| {
             events(TaskEvent::Log { line: l.into() });
         })?;
-        if !unpacking && code == 0 {
-            stage_ev(events, Stage::Download, StageStatus::Done);
-        }
-        finish_stage(
-            events,
-            if unpacking {
-                Stage::Unpack
-            } else {
-                Stage::Download
-            },
-            code,
-            &lines,
-        )
+        finish_stage(events, Stage::Migrate, code, &lines)
     }
 
     fn create_bottle(&self, profile: &Profile, events: Events) -> Result<()> {
@@ -930,18 +959,6 @@ fn mtime(p: &Path) -> Option<u64> {
     t.duration_since(UNIX_EPOCH).ok().map(|d| d.as_secs())
 }
 
-fn subdirs(dir: &Path) -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.is_dir())
-        .collect();
-    out.sort();
-    out
-}
-
 /// Файлы до глубины `depth`, без перехода по симлинкам.
 fn find_files(dir: &Path, depth: usize, pred: &dyn Fn(&Path) -> bool) -> Vec<PathBuf> {
     let mut out = Vec::new();
@@ -960,17 +977,6 @@ fn find_files(dir: &Path, depth: usize, pred: &dyn Fn(&Path) -> bool) -> Vec<Pat
     out
 }
 
-/// Есть ли каталог с этим именем до глубины `depth` (без симлинков).
-fn find_dir(dir: &Path, name: &str, depth: usize) -> bool {
-    let Ok(rd) = fs::read_dir(dir) else {
-        return false;
-    };
-    rd.flatten().any(|e| {
-        e.file_type().is_ok_and(|t| t.is_dir())
-            && (e.file_name() == name || (depth > 0 && find_dir(&e.path(), name, depth - 1)))
-    })
-}
-
 fn wine_in(engine: &Path) -> bool {
     !find_files(engine, 6, &|p| {
         p.parent().is_some_and(|d| d.ends_with("bin"))
@@ -982,24 +988,21 @@ fn wine_in(engine: &Path) -> bool {
 }
 
 fn has_d3dmetal(engine: &Path) -> bool {
-    find_dir(engine, "D3DMetal.framework", 7)
+    carafe_core::engine::has_d3dmetal(engine)
 }
 
-fn engine_info(dir: &Path) -> EngineInfo {
-    let base = dir
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or_default()
-        .to_string();
-    let name = match base.as_str() {
-        "soju-engine" => "soju".to_string(),
-        b if b.starts_with("gptk-") => format!("GPTK {}", &b[5..]),
-        b => b.to_string(),
-    };
+fn engine_info(e: &InstalledEngine) -> EngineInfo {
     EngineInfo {
-        id: dir.display().to_string(),
-        name,
-        d3dmetal: has_d3dmetal(dir),
+        id: e.dir.display().to_string(),
+        name: e.label(),
+        d3dmetal: e.d3dmetal,
+    }
+}
+
+fn kind_of(k: carafe_core::EngineKind) -> EngineKind {
+    match k {
+        carafe_core::EngineKind::Soju => EngineKind::Soju,
+        carafe_core::EngineKind::Gptk => EngineKind::Gptk,
     }
 }
 

@@ -12,14 +12,19 @@ use std::time::{Duration, Instant};
 
 use carafe_core::download::steamcmd_accounts;
 use carafe_core::{
-    AutoDownloader, BridgeState, BridgeTarget, Carafe, CloudMode, Downloader, Error, JobState, MoveKind, Queue,
-    QueueEvent, SteamCmdDownloader, human_bytes, parse_appid,
+    ActiveSource, AutoDownloader, BridgeState, BridgeTarget, Carafe, CloudMode, Downloader, EngineKind, Error,
+    JobState, MoveKind, Queue, QueueEvent, SteamCmdDownloader, human_bytes, parse_appid,
 };
 
 const USAGE: &str = "\
 Использование:
-  carafe engine install            скачать и распаковать Wine + D3DMetal
+  carafe engine install [gptk]     поставить последний soju (Wine + D3DMetal из своей копии GPTK);
+                                   gptk — прежний движок и источник D3DMetal
+  carafe engine update             поставить новый релиз soju, если вышел
+  carafe engine status             какие движки стоят, какой активен, D3DMetal
+  carafe engine use soju|gptk      сменить движок: бутылки сначала копируются рядом
   carafe bottle create [NAME]      создать префикс Wine (по умолчанию: default)
+  carafe bottle restore NAME [КОПИЯ]  вернуть бутылку из резервной копии (по умолчанию свежей)
   carafe login [--json]            войти в Steam по QR из приложения Steam (без пароля)
   carafe logout                    выйти: отозвать вход и стереть его из Связки ключей
   carafe account [--json]          под каким аккаунтом вошёл (без сети)
@@ -175,6 +180,30 @@ fn eta_text(secs: u64) -> String {
     }
 }
 
+/// `engine status`: активный движок, установленные, D3DMetal и что делать дальше.
+fn engine_status(c: &Carafe) {
+    let st = c.engine_status();
+    let from = match st.source {
+        ActiveSource::Env => " (CARAFE_ENGINE_DIR)",
+        ActiveSource::Chosen => "",
+        ActiveSource::Legacy => " (прежний — выбора не было)",
+        ActiveSource::Default => " (по умолчанию)",
+    };
+    let state = if st.ready { "" } else { " — не установлен" };
+    println!("движок: {}{from}{state}\t{}", st.active.label(), st.active.dir.display());
+    if st.ready {
+        println!("D3DMetal: {}", if st.active.d3dmetal { "подключён" } else { "не подключён" });
+    }
+    for e in &st.installed {
+        let mark = if e.dir == st.active.dir { "*" } else { " " };
+        let d3d = if e.d3dmetal { "D3DMetal" } else { "без D3DMetal" };
+        println!("{mark} {}\t{d3d}\t{}", e.label(), e.dir.display());
+    }
+    for h in st.hints() {
+        eprintln!("==> {h}");
+    }
+}
+
 /// Позиционный аргумент как строка; нет его — `None` (как `${N:-}`).
 fn arg(args: &[OsString], i: usize) -> Option<&str> {
     args.get(i).and_then(|a| a.to_str()).filter(|a| !a.is_empty())
@@ -207,7 +236,18 @@ fn run(args: &[OsString]) -> Result<i32, Fail> {
     let c = Carafe::from_env()?;
     match (cmd, sub) {
         ("engine", "install") => {
-            c.engine_install()?;
+            let kind = arg(args, 2).map(EngineKind::parse).transpose()?.unwrap_or(EngineKind::Soju);
+            c.engine_install(kind)?;
+        }
+        ("engine", "update") => {
+            c.soju_install(true)?;
+        }
+        ("engine", "status") => engine_status(&c),
+        ("engine", "use") => {
+            c.engine_use(EngineKind::parse(need(args, 2, "нужен движок: soju или gptk")?)?)?;
+        }
+        ("bottle", "restore") => {
+            c.bottle_restore(need(args, 2, "нужно имя бутылки")?, arg(args, 3))?;
         }
         ("bottle", "create") => {
             c.bottle_create(arg(args, 2))?;

@@ -1,7 +1,7 @@
 //! Интерфейс между GUI и ядром carafe.
 //!
 //! Экраны знают только этот трейт. Сейчас его реализуют `MockBackend` (для разработки UI)
-//! и `CliBackend` (обёртка над `bin/carafe`); позже сюда встанет `carafe-core`.
+//! и `CliBackend` (обёртка над `bin/carafe` и `carafe-core`).
 //!
 //! Все методы блокирующие: GUI зовёт их из отдельных потоков. Долгие операции
 //! (запуск, сборка моста, установка движка) шлют события в `Events` по ходу дела.
@@ -159,6 +159,45 @@ pub struct Environment {
     pub checks: Vec<Check>,
     pub engines: Vec<EngineInfo>,
     pub bottles: Vec<String>,
+    /// Активный движок; `None` — бэкенд не знает.
+    pub engine: Option<EngineState>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EngineKind {
+    /// soju из релизов userTrv/soju — по умолчанию.
+    Soju,
+    /// GPTK 3.0 от Gcenx: запасной движок и источник D3DMetal.
+    Gptk,
+}
+
+impl EngineKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EngineKind::Soju => "soju",
+            EngineKind::Gptk => "gptk",
+        }
+    }
+}
+
+/// Активный движок и что с ним можно сделать — для «Окружения».
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineState {
+    /// «soju 26.3.0», «GPTK 3.0».
+    pub label: String,
+    pub kind: Option<EngineKind>,
+    /// Активный движок на месте.
+    pub ready: bool,
+    pub d3dmetal: bool,
+    /// Движок выбран в настройках (свой каталог), кнопки смены движка не к месту.
+    pub custom: bool,
+    /// Установленный soju: «soju 26.3.0».
+    pub soju: Option<String>,
+    pub gptk: Option<String>,
+    /// Пользователь до soju (GPTK и бутылки): предложить перейти.
+    pub suggest_soju: bool,
 }
 
 impl Environment {
@@ -262,6 +301,8 @@ pub enum Stage {
     Unpack,
     Bottle,
     Build,
+    /// Смена движка: резервные копии бутылок и `wineboot -u`.
+    Migrate,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -389,7 +430,18 @@ pub trait Backend: Send + Sync {
 
     fn build_bridge(&self, appid: AppId, profile: &Profile, events: Events) -> Result<()>;
 
+    /// Поставить движок по умолчанию — последний soju.
     fn install_engine(&self, profile: &Profile, events: Events) -> Result<()>;
+
+    /// Поставить GPTK: запасной движок и источник D3DMetal для soju.
+    fn install_gptk(&self, _profile: &Profile, _events: Events) -> Result<()> {
+        unsupported()
+    }
+
+    /// Сменить движок: бутылки сначала копируются рядом, потом обновляются новым движком.
+    fn use_engine(&self, _kind: EngineKind, _profile: &Profile, _events: Events) -> Result<()> {
+        unsupported()
+    }
 
     fn create_bottle(&self, profile: &Profile, events: Events) -> Result<()>;
 
@@ -466,7 +518,9 @@ pub trait Backend: Send + Sync {
     /// Починить одну проверку окружения.
     fn fix(&self, check: CheckId, profile: &Profile, events: Events) -> Result<()> {
         match check {
-            CheckId::Engine | CheckId::D3dMetal => self.install_engine(profile, events),
+            CheckId::Engine => self.install_engine(profile, events),
+            // D3DMetal для soju берётся из GPTK; у GPTK без D3DMetal — переустановка.
+            CheckId::D3dMetal => self.install_gptk(profile, events),
             CheckId::Bottle => self.create_bottle(profile, events),
             CheckId::Steam => self.open_steam(),
             CheckId::Rosetta | CheckId::Bridge => Err(BackendError::new("это не чинится кнопкой")),

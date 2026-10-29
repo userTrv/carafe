@@ -5,11 +5,11 @@
 
 | Что | Лицензия | Как попадает к пользователю |
 |---|---|---|
-| Движок по умолчанию: сборка Wine от Gcenx с D3DMetal из GPTK 3.0 | LGPL 2.1+ (Wine); D3DMetal — лицензия Apple | `carafe engine install` скачивает её с GitHub Gcenx; carafe её не распространяет |
-| Движок [soju](https://github.com/userTrv/soju) (Wine из исходников CrossOver), по желанию через `CARAFE_ENGINE_DIR` | LGPL 2.1+ | релиз soju; лицензии и ссылки на исходники — в `share/doc/soju/` движка |
+| Движок по умолчанию [soju](https://github.com/userTrv/soju) (Wine из исходников CrossOver) | LGPL 2.1+ | `carafe engine install` скачивает релиз `engine-v*` с GitHub soju, без D3DMetal; лицензии и ссылки на исходники — в `share/doc/soju/` движка |
+| Запасной движок и источник D3DMetal: сборка Wine от Gcenx с D3DMetal из GPTK 3.0 | LGPL 2.1+ (Wine); D3DMetal — лицензия Apple | `carafe engine install gptk` скачивает её с GitHub Gcenx; carafe её не распространяет |
 | Мост Steamworks из soju | LGPL 2.1+ | собирается на машине пользователя |
 | Steamworks SDK (`libsteam_api.dylib`) | собственность Valve | скачивается при сборке моста, carafe его не распространяет |
-| D3DMetal из Game Porting Toolkit | лицензия Apple | берётся из копии GPTK у пользователя, carafe его не распространяет |
+| D3DMetal из Game Porting Toolkit | лицензия Apple | `bin/soju-d3dmetal` копирует его в движок soju из копии GPTK у пользователя (движок GPTK от carafe, Game Porting Toolkit.app, образ GPTK, CrossOver); carafe его не распространяет |
 | steamcmd | собственность Valve | скачивается с серверов Valve |
 | Rust-зависимости (Tauri и др.) | MIT / Apache 2.0 | полный список — `Cargo.lock`, `gui/Cargo.lock` |
 | [SteamKit2](https://github.com/SteamRE/SteamKit) 3.5.0 (SteamRE) | LGPL 2.1 | входит в хелпер `carafe-steam` (`steam/`) отдельным файлом `SteamKit2.dll` рядом с бинарником — его можно заменить своей сборкой SteamKit2 той же или более новой версии 3.x; хелпер пересобирается из исходников `steam/build.sh` |

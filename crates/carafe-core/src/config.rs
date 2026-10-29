@@ -84,8 +84,10 @@ impl Config {
         self.home.join("backups").join(appid.to_string())
     }
 
+    /// Каталог активного движка: `CARAFE_ENGINE_DIR`, выбор из `engines/current` или движок по
+    /// умолчанию ([`crate::engine::active_engine`]).
     pub fn engine_dir(&self) -> PathBuf {
-        self.engine_dir.clone().unwrap_or_else(|| self.engines().join(crate::engine::ENGINE_NAME))
+        crate::engine::active_engine(self).0
     }
 
     pub fn bottle_dir(&self, name: &str) -> PathBuf {
@@ -143,7 +145,8 @@ mod tests {
         assert_eq!(c.home, PathBuf::from("/Users/u/Library/Application Support/carafe"));
         assert_eq!(c.bottle, "default");
         assert!(c.bridge && c.cloud && !c.hud);
-        assert_eq!(c.engine_dir(), c.home.join("engines/gptk-3.0-3"));
+        // Ничего не установлено: soju, которого ещё нет.
+        assert_eq!(c.engine_dir(), c.home.join("engines/soju"));
         assert_eq!(c.prefix(), c.home.join("bottles/default"));
         assert_eq!(c.steam_dir, PathBuf::from("/Users/u/Library/Application Support/Steam"));
     }

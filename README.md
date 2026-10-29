@@ -25,7 +25,8 @@
 - Mac с Apple Silicon и macOS (окно собрано под macOS 13 и новее).
 - Rosetta 2: `softwareupdate --install-rosetta`.
 - [Steam для Mac](https://store.steampowered.com/about/), запущенный и с тем же аккаунтом: через него работают мост и Steam Cloud.
-- D3DMetal из Apple Game Porting Toolkit. По умолчанию carafe ставит сборку Wine с D3DMetal из GPTK 3.0 от [Gcenx](https://github.com/Gcenx/game-porting-toolkit) и сверяет её sha256.
+- Движок по умолчанию — [soju](https://github.com/userTrv/soju): Wine 11 из исходников CrossOver под Rosetta. carafe берёт последний релиз `engine-v*`, сверяет размер и sha256 с его `engine.json` и ставит в `engines/soju-<версия>`.
+- D3DMetal из Apple Game Porting Toolkit. В архиве soju его нет: carafe подключает D3DMetal из твоей копии GPTK (`bin/soju-d3dmetal` ищет её в движке GPTK от carafe, в /Applications, в смонтированном образе, в CrossOver). Нет своей копии — `carafe engine install gptk` ставит сборку Wine с D3DMetal из GPTK 3.0 от [Gcenx](https://github.com/Gcenx/game-porting-toolkit): она источник D3DMetal и запасной движок.
 - Checkout [soju](https://github.com/userTrv/soju) рядом с carafe (`../soju`) или в `CARAFE_SOJU`: из него собирается мост.
 - Для сборки из исходников: Rust 1.99.1 (берётся из `rust-toolchain.toml`) и .NET SDK из `steam/global.json` для хелпера входа.
 
@@ -52,7 +53,7 @@ cd gui && cargo run --release
 То же из терминала:
 
 ```bash
-carafe engine install
+carafe engine install        # soju; без своей копии GPTK ещё: carafe engine install gptk
 carafe bottle create
 carafe login                 # QR в терминале
 carafe game owned            # купленные игры
@@ -67,8 +68,12 @@ carafe game run <appid>
 
 | Команда | Что делает |
 |---|---|
-| `carafe engine install` | скачать и распаковать Wine с D3DMetal |
+| `carafe engine install [gptk]` | поставить последний soju и подключить D3DMetal; `gptk` — запасной движок и источник D3DMetal |
+| `carafe engine update` | поставить новый релиз soju, если вышел |
+| `carafe engine status` | какие движки стоят, какой активен, подключён ли D3DMetal |
+| `carafe engine use soju\|gptk` | сменить движок: бутылки сначала копируются рядом, потом `wineboot -u` новым движком |
 | `carafe bottle create [NAME]` | создать префикс Wine (по умолчанию `default`) |
+| `carafe bottle restore NAME [КОПИЯ]` | вернуть бутылку из резервной копии (по умолчанию свежей) |
 | `carafe login`, `carafe logout`, `carafe account` | вход в Steam по QR, выход, текущий аккаунт |
 | `carafe game owned` | все купленные игры аккаунта |
 | `carafe game install APPID [USER] [--to DIR]` | поставить в очередь; без `USER` через вход по QR, с `USER` через steamcmd |
@@ -89,12 +94,18 @@ carafe game run <appid>
 | `CARAFE_HUD=1` | Metal HUD с FPS |
 | `CARAFE_BRIDGE=0` | запуск без моста, с оригинальной `steam_api64.dll` |
 | `CARAFE_CLOUD=0` | `game run` не трогает Steam Cloud |
-| `CARAFE_ENGINE_DIR` | свой движок, например `dist/soju-engine` из soju |
+| `CARAFE_ENGINE_DIR` | свой движок, например `dist/soju-engine` из soju; главнее выбранного `engine use` |
 | `CARAFE_SOJU` | checkout soju, по умолчанию `../soju` |
 | `CARAFE_STEAM_HELPER` | свой `carafe-steam`, по умолчанию `steam/dist/<rid>/` |
 | `CARAFE_HOME` | где всё хранится, по умолчанию `~/Library/Application Support/carafe` |
 
-`bin/carafe` — прежняя версия на bash с частью команд (без входа по QR, библиотек и очереди). Данные у неё общие с Rust-версией.
+`bin/carafe` — прежняя версия на bash с частью команд (без входа по QR, библиотек и очереди). Данные у неё общие с Rust-версией, команды `engine` и `bottle restore` ведут себя одинаково.
+
+### Движки
+
+Активный движок записан в `engines/current` (имя каталога в `engines/`); `CARAFE_ENGINE_DIR` главнее. Новый пользователь получает soju. Кто уже играл на GPTK (есть `engines/gptk-3.0-3` и бутылки), остаётся на нём, пока сам не скажет `carafe engine use soju`; `engine status` и «Окружение» в окне предлагают перейти.
+
+Смена движка ничего не удаляет. Перед `wineboot -u` новым движком каждая бутылка копируется в `bottles/<имя>.backup-<дата>` (на APFS это клон: мгновенно и без места). Если в бутылке что-то запущено, смена отказывает. Не обновилась — бутылки возвращаются из копий, движок остаётся прежним. Если новый движок заводит другого пользователя Windows, сейвы (AppData, Documents, Saved Games) копируются к нему. Откат: `carafe engine use gptk`, а бутылку целиком — `carafe bottle restore default` (заменённая уходит в `<имя>.replaced-<дата>`).
 
 ## Как устроено
 
