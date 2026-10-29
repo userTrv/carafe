@@ -1,0 +1,14 @@
+[package]
+name = "carafe-gui"
+version = "0.1.0"
+edition = "2024"
+description = "GUI для carafe: Windows-игры из Steam на macOS"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2.7", features = [] }
+
+[dependencies]
+tauri = { version = "2.12", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
