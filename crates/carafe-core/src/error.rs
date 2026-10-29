@@ -44,6 +44,19 @@ pub enum Error {
     #[error("в префиксе нет пользователя")]
     NoPrefixUser,
 
+    #[error("нет хелпера carafe-steam: собери steam/build.sh (или задай CARAFE_STEAM_HELPER)")]
+    SteamHelperMissing,
+    #[error("не вошёл в Steam: carafe login")]
+    NotLoggedIn,
+    #[error("вход в Steam больше не действует — войди заново: carafe login")]
+    TokenExpired,
+    /// Ошибка из ответа хелпера: код протокола (`network`, `not_owned`…) и текст.
+    #[error("Steam: {message}")]
+    Steam { code: String, message: String },
+    #[error("carafe-steam: {0}")]
+    SteamProtocol(String),
+    #[error("Связка ключей: {0}")]
+    Keychain(String),
     #[error("игра {0} не установлена")]
     NotInstalled(u32),
     #[error("{} — не папка библиотеки (carafe library list)", .0.display())]

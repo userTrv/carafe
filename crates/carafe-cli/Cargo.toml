@@ -13,6 +13,9 @@ path = "src/main.rs"
 
 [dependencies]
 carafe-core.workspace = true
+# QR для `carafe login` прямо в терминале; без image/svg — только текстовый рендер.
+qrcode = { version = "0.14", default-features = false }
+serde_json = "1"
 
 [lints]
 workspace = true

@@ -17,7 +17,9 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use carafe_core::{Carafe, Config, GameLocation, JobKind, JobState, Queue, SteamCmdDownloader};
+use carafe_core::{
+    AutoDownloader, Carafe, Config, GameLocation, JobKind, JobState, LoginEvent, Queue,
+};
 
 use crate::backend::*;
 
@@ -78,7 +80,8 @@ impl CliBackend {
             return;
         }
         let (queue, shutdown) = (self.queue.clone(), self.shutdown.clone());
-        let dl = SteamCmdDownloader::new(self.core.clone(), None);
+        // Вошёл через Steam (QR) — качает carafe-steam, иначе steamcmd со своим входом.
+        let dl = AutoDownloader::new(self.core.clone());
         *w = Some(thread::spawn(move || {
             while !shutdown.load(Ordering::Relaxed) {
                 match queue.run_forever(&dl, &shutdown) {
@@ -560,6 +563,56 @@ impl Backend for CliBackend {
                 Err(e)
             }
         }
+    }
+
+    fn steam_account(&self) -> Result<Option<SteamAccount>> {
+        Ok(self
+            .core
+            .steam_account()
+            .map_err(core_err)?
+            .map(|account_name| SteamAccount {
+                account_name,
+                steam_id: None,
+            }))
+    }
+
+    fn steam_login(&self, cancel: &AtomicBool, events: Events) -> Result<SteamAccount> {
+        let a = self
+            .core
+            .steam_login_qr(
+                &mut |e| {
+                    if let LoginEvent::Qr { url } = e {
+                        events(TaskEvent::Qr { url });
+                    }
+                },
+                Some(&|| cancel.load(Ordering::Relaxed)),
+            )
+            .map_err(core_err)?;
+        Ok(SteamAccount {
+            account_name: a.account_name,
+            steam_id: a.steam_id_masked,
+        })
+    }
+
+    fn steam_logout(&self) -> Result<()> {
+        self.core.steam_logout().map(|_| ()).map_err(core_err)
+    }
+
+    fn owned_games(&self) -> Result<Vec<OwnedGame>> {
+        Ok(self
+            .core
+            .owned_games()
+            .map_err(core_err)?
+            .into_iter()
+            .map(|g| OwnedGame {
+                appid: g.app.appid,
+                cover: Cover::for_app(g.app.appid),
+                name: g.app.name,
+                installed: g.installed,
+                windows: g.app.windows,
+                size_bytes: g.app.size_bytes,
+            })
+            .collect())
     }
 
     fn downloads(&self) -> Result<Vec<Download>> {

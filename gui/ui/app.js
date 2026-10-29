@@ -121,7 +121,9 @@ function toast(msg, kind = "bad") {
 
 async function loadGames() {
   try {
-    S.games = await invoke("games");
+    S.gamesRaw = await invoke("games");
+    // Купленные, но не установленные — из аккаунта Steam (steam.js).
+    S.games = withOwned(S.gamesRaw);
   } catch (e) {
     S.games = S.games || [];
     toast(e);
@@ -318,6 +320,7 @@ function renderLibrary() {
       <div class="head">
         <h1>Библиотека</h1>
         <span class="grow"></span>
+        <span id="steam-head"></span>
         <div class="seg" id="seg">
           <button data-f="all">Все</button>
           <button data-f="installed">Установлены</button>
@@ -336,6 +339,7 @@ function renderLibrary() {
     renderGrid();
   });
   renderBanner();
+  renderSteamHead();
   renderLibraryBody();
 }
 
@@ -367,7 +371,7 @@ function pickHero() {
 function playButton(g) {
   const t = task(`launch:${g.appid}`);
   const cls = "play";
-  if (!g.installed) return installButton(g);
+  if (!g.installed) return g.windows === false ? `<button class="${cls}" disabled style="opacity:.5">Нет Windows-сборки</button>` : installButton(g);
   if (g.available === false) return `<button class="${cls}" disabled style="opacity:.5">${I.disk}Диск отключён</button>`;
   if (t?.running) {
     if (t.stages.game?.status === "active") return `<button class="${cls} running" disabled>${I.game}Играет</button>`;
@@ -659,6 +663,7 @@ function renderSettings() {
         <div class="field"><div class="field-label">Мост в Steam<div class="field-sub">ачивки и лидерборды</div></div>${sw("bridge", p.bridge)}</div>
         <div class="field"><div class="field-label">Steam Cloud</div>${sw("cloud", p.cloud)}</div>
       </div>
+      <div class="group" id="steam-group"></div>
       <div class="group" id="libs"></div>
       <div class="group">
         <h2>Ядро</h2>
@@ -669,6 +674,7 @@ function renderSettings() {
   main.querySelectorAll("[data-key]").forEach((el) => el.addEventListener("change", () => saveSetting(el)));
   renderLibs();
   loadLibs();
+  renderSteamGroup();
 }
 
 async function saveSetting(el) {
@@ -711,7 +717,7 @@ async function saveSetting(el) {
   const route = S.info.route || "";
   const [r, id] = route.split("/");
   go(r === "game" || r === "play" ? "library" : r === "setup" || r === "settings" || r === "downloads" ? r : "library");
-  await Promise.all([loadGames(), loadEnv()]);
+  await Promise.all([loadGames(), loadEnv(), loadAccount()]);
   if (r === "game" || r === "play") {
     go("game", Number(id));
     if (r === "play") play(Number(id));

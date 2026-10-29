@@ -1,5 +1,7 @@
 //! carafe — те же команды, что у bash-версии `bin/carafe`, поверх carafe-core.
 
+mod account;
+
 use std::ffi::OsString;
 use std::io::IsTerminal;
 use std::os::unix::process::CommandExt;
@@ -10,22 +12,27 @@ use std::time::{Duration, Instant};
 
 use carafe_core::download::steamcmd_accounts;
 use carafe_core::{
-    BridgeState, BridgeTarget, Carafe, CloudMode, Error, JobState, MoveKind, Queue, QueueEvent, SteamCmdDownloader,
-    human_bytes, parse_appid,
+    AutoDownloader, BridgeState, BridgeTarget, Carafe, CloudMode, Downloader, Error, JobState, MoveKind, Queue,
+    QueueEvent, SteamCmdDownloader, human_bytes, parse_appid,
 };
 
 const USAGE: &str = "\
 Использование:
   carafe engine install            скачать и распаковать Wine + D3DMetal
   carafe bottle create [NAME]      создать префикс Wine (по умолчанию: default)
+  carafe login [--json]            войти в Steam по QR из приложения Steam (без пароля)
+  carafe logout                    выйти: отозвать вход и стереть его из Связки ключей
+  carafe account [--json]          под каким аккаунтом вошёл (без сети)
   carafe steam login USER          войти в steamcmd (пароль и Steam Guard вводишь сам)
   carafe game install APPID [USER] [--to DIR]
-                                   скачать Windows-сборку игры через steamcmd (через очередь)
+                                   скачать Windows-сборку (через очередь): без USER —
+                                   с аккаунта из carafe login (SteamKit2), иначе steamcmd
   carafe game verify APPID         проверить файлы игры
   carafe game move APPID DIR       перенести игру в другую библиотеку
   carafe game import APPID [DIR]   забрать depot, скачанный консолью Steam (download_depot)
   carafe game run APPID [ARGS...]  запустить игру (exe ищется в папке игры)
   carafe game list                 установленные игры: мост, правила облака
+  carafe game owned [--json]       все купленные игры аккаунта (после carafe login)
   carafe library list              папки библиотек: место на диске, игры
   carafe library add|remove DIR    добавить или убрать папку (файлы не трогаются)
   carafe library default DIR       папка для новых установок
@@ -42,7 +49,11 @@ const USAGE: &str = "\
 Переменные: CARAFE_BOTTLE (префикс, default), CARAFE_EXE (exe игры вручную),
             CARAFE_HUD=1 (Metal HUD с FPS), CARAFE_BRIDGE=0 (запуск без моста).
             CARAFE_ENGINE_DIR (свой движок, например dist/soju-engine из soju),
-            CARAFE_SOJU (checkout soju, по умолчанию ../soju рядом с carafe).";
+            CARAFE_SOJU (checkout soju, по умолчанию ../soju рядом с carafe).
+            CARAFE_STEAM_HELPER (carafe-steam, по умолчанию steam/dist рядом с carafe).
+
+Вход в Steam идёт через сторонний клиент на SteamKit2: Valve такие терпит, но официально
+не поддерживает.";
 
 enum Fail {
     /// Неизвестная команда: справка и код 1, как `usage; exit 1`.
@@ -89,7 +100,8 @@ fn split_to(args: &[OsString]) -> Result<(Vec<String>, Option<PathBuf>), Fail> {
     Ok((pos, to))
 }
 
-/// Обработать очередь загрузок через steamcmd, печатая прогресс. Если её уже обрабатывает
+/// Обработать очередь загрузок, печатая прогресс. С USER — через steamcmd, без него — через
+/// аккаунт из `carafe login` (SteamKit2), если вход есть, иначе через steamcmd. Если её уже обрабатывает
 /// другой процесс (GUI), загрузка пойдёт там.
 fn run_downloads(c: &Carafe, user: Option<&str>) -> Result<(), Error> {
     let q = Arc::new(c.queue());
@@ -126,8 +138,11 @@ fn run_downloads(c: &Carafe, user: Option<&str>) -> Result<(), Error> {
         }
         if tty { eprint!("\r\x1b[K{line}") } else { eprintln!("{line}") }
     });
-    let dl = SteamCmdDownloader::new(c.clone(), user.map(String::from));
-    let r = run_queue(&q, &dl);
+    let dl: Box<dyn Downloader> = match user {
+        None => Box::new(AutoDownloader::new(c.clone())),
+        Some(u) => Box::new(SteamCmdDownloader::new(c.clone(), Some(u.into()))),
+    };
+    let r = run_queue(&q, dl.as_ref());
     if tty {
         eprintln!();
     }
@@ -140,11 +155,14 @@ fn run_downloads(c: &Carafe, user: Option<&str>) -> Result<(), Error> {
     }
 }
 
-fn run_queue(q: &Queue, dl: &SteamCmdDownloader) -> Result<(), Error> {
+fn run_queue(q: &Queue, dl: &dyn Downloader) -> Result<(), Error> {
     q.run_until_empty(dl)?;
     let failed = q.jobs()?.into_iter().filter(|j| j.state == JobState::Failed).count();
     if failed > 0 {
-        return Err(Error::SteamCmd(format!("не скачалось: {failed} (carafe downloads)")));
+        return Err(Error::Steam {
+            code: "failed".into(),
+            message: format!("не скачалось: {failed} (carafe downloads)"),
+        });
     }
     Ok(())
 }
@@ -170,6 +188,15 @@ fn appid(args: &[OsString], i: usize) -> Result<u32, Error> {
     parse_appid(need(args, i, "нужен APPID")?)
 }
 
+/// `--json` после команды: машинный вывод для GUI. Другие лишние аргументы — ошибка.
+fn json_flag(args: &[OsString], from: usize) -> Result<bool, Fail> {
+    match args.get(from..).unwrap_or_default() {
+        [] => Ok(false),
+        [a] if a == "--json" => Ok(true),
+        _ => Err(Fail::Usage),
+    }
+}
+
 fn run(args: &[OsString]) -> Result<i32, Fail> {
     let cmd = arg(args, 0).unwrap_or("");
     let sub = arg(args, 1).unwrap_or("");
@@ -192,6 +219,10 @@ fn run(args: &[OsString]) -> Result<i32, Fail> {
             }
             c.steam_login(need(args, 2, "нужен логин Steam")?)?;
         }
+        ("login", _) => account::login(&c, json_flag(args, 1)?)?,
+        ("logout", _) => account::logout(&c)?,
+        ("account", _) => account::status(&c, json_flag(args, 1)?)?,
+        ("game", "owned") => account::owned(&c, json_flag(args, 2)?)?,
         ("game", "install" | "verify") => {
             let id = appid(args, 2)?;
             let (pos, to) = split_to(&args[3..])?;

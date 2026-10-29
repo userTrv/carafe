@@ -170,7 +170,12 @@ fn spawn_task(
         let h = handle.clone();
         let t = task.clone();
         let sink = move |e: TaskEvent| {
-            let _ = h.emit("task", json!({ "task": t, "event": clean(e) }));
+            let event = match e {
+                // URL входа в окно не уходит — только картинка.
+                TaskEvent::Qr { url } => json!({ "kind": "qr", "svg": qr_svg(&url) }),
+                e => clean(e),
+            };
+            let _ = h.emit("task", json!({ "task": t, "event": event }));
         };
         let res = work(b.as_ref(), &p, &sink);
         handle
@@ -309,6 +314,70 @@ async fn download_action(
     blocking(move || b.download_action(appid, action)).await
 }
 
+/// QR в SVG: тёмные модули на белом с полями — так его читает камера приложения Steam.
+fn qr_svg(url: &str) -> Value {
+    use qrcode::render::svg;
+    match qrcode::QrCode::new(url.as_bytes()) {
+        Ok(code) => code
+            .render::<svg::Color<'_>>()
+            .min_dimensions(240, 240)
+            .dark_color(svg::Color("#0b0b10"))
+            .light_color(svg::Color("#ffffff"))
+            .build()
+            .into(),
+        Err(_) => Value::Null,
+    }
+}
+
+#[tauri::command]
+async fn steam_account(app: State<'_, App>) -> Result<Value, String> {
+    let b = app.backend();
+    blocking(move || b.steam_account()).await.map(clean)
+}
+
+/// Вход по QR — задача `login`: события `qr` с SVG, итог — `task-end`. Отмена —
+/// `cancel_task("login")`.
+#[tauri::command]
+fn steam_login(handle: AppHandle, app: State<'_, App>) -> Result<(), String> {
+    let task = "login".to_string();
+    let cancel = Arc::new(AtomicBool::new(false));
+    app.cancels
+        .lock()
+        .expect("cancels")
+        .insert(task.clone(), cancel.clone());
+    let h = handle.clone();
+    let r = spawn_task(handle, &app, task.clone(), move |b, _, ev| {
+        // Отмена — не ошибка: окно просто закрывает QR (код 1 вместо тоста).
+        let r = match b.steam_login(&cancel, ev) {
+            Ok(_) => Ok(0),
+            Err(_) if cancel.load(Ordering::Relaxed) => Ok(1),
+            Err(e) => Err(e),
+        };
+        h.state::<App>()
+            .cancels
+            .lock()
+            .expect("cancels")
+            .remove("login");
+        r
+    });
+    if r.is_err() {
+        app.cancels.lock().expect("cancels").remove(&task);
+    }
+    r
+}
+
+#[tauri::command]
+async fn steam_logout(app: State<'_, App>) -> Result<(), String> {
+    let b = app.backend();
+    blocking(move || b.steam_logout()).await
+}
+
+#[tauri::command]
+async fn owned_games(app: State<'_, App>) -> Result<Value, String> {
+    let b = app.backend();
+    blocking(move || b.owned_games()).await.map(clean)
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -350,6 +419,10 @@ fn main() {
             cancel_task,
             downloads,
             download_action,
+            steam_account,
+            steam_login,
+            steam_logout,
+            owned_games,
         ])
         .build(tauri::generate_context!())
         .expect("carafe-gui")

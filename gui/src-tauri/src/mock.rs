@@ -55,9 +55,55 @@ struct State {
     libraries: Vec<MockLibrary>,
     default_library: usize,
     jobs: Vec<MockJob>,
+    /// Вход в Steam: имя аккаунта. `CARAFE_MOCK_STEAM=in` — сразу вошёл.
+    account: Option<&'static str>,
 }
 
+/// Игры аккаунта, которых нет среди установленных: появляются в библиотеке после входа.
+/// (appid, имя, ГБ, есть ли Windows-сборка)
+const OWNED_EXTRA: &[(AppId, &str, f64, bool)] = &[
+    (1091500, "Cyberpunk 2077", 65.0, true),
+    (1030300, "Hollow Knight: Silksong", 7.5, true),
+    (620, "Portal 2", 12.8, true),
+    (220, "Half-Life 2", 6.5, true),
+    (632470, "Disco Elysium", 20.0, true),
+    (504230, "Celeste", 1.2, true),
+    (105600, "Terraria", 0.5, true),
+    (1145360, "Hades", 15.0, true),
+    (892970, "Valheim", 1.7, true),
+    (646570, "Slay the Spire", 1.1, true),
+    (2420110, "Horizon Forbidden West", 150.0, true),
+    (1817070, "Marvel's Spider-Man Remastered", 75.0, true),
+    // Только Mac/Linux: ставить нечего.
+    (1, "Только для Mac (демо)", 0.0, false),
+];
+
+const MOCK_QR: [&str; 2] = [
+    "https://s.team/q/1/0000000000000000001",
+    "https://s.team/q/1/0000000000000000002",
+];
+
 impl State {
+    /// После входа: купленные, но не установленные игры — в библиотеку.
+    fn add_owned(&mut self) {
+        for &(appid, name, size_gb, windows) in OWNED_EXTRA {
+            if !windows || self.game(appid).is_some() {
+                continue;
+            }
+            self.games.push(MockGame {
+                appid,
+                name,
+                installed: false,
+                library: self.default_library,
+                size_gb,
+                bridge: BridgeState::Unknown,
+                cloud: CloudState::Unknown,
+                last_sync_ago: None,
+                files: &[],
+            });
+        }
+    }
+
     fn game(&self, appid: AppId) -> Option<&MockGame> {
         self.games.iter().find(|g| g.appid == appid)
     }
@@ -286,7 +332,13 @@ impl MockBackend {
             libraries,
             default_library: 1,
             jobs,
+            account: None,
         }));
+        if std::env::var("CARAFE_MOCK_STEAM").is_ok_and(|v| v == "in") {
+            let mut st = state.lock().expect("mock state");
+            st.account = Some("tester_mac");
+            st.add_owned();
+        }
         let st = Arc::downgrade(&state);
         std::thread::spawn(move || download_loop(st));
         Self { state }
@@ -640,6 +692,77 @@ impl Backend for MockBackend {
         let mut st = self.lock();
         st.default_library = st.library_index(path)?;
         Ok(())
+    }
+
+    fn steam_account(&self) -> Result<Option<SteamAccount>> {
+        Ok(self.lock().account.map(|a| SteamAccount {
+            account_name: a.into(),
+            steam_id: Some("••••4242".into()),
+        }))
+    }
+
+    fn steam_login(&self, cancel: &AtomicBool, events: Events) -> Result<SteamAccount> {
+        // Два кода, как будто Steam сменил challenge, потом «подтверждение в приложении».
+        for url in MOCK_QR {
+            events(TaskEvent::Qr { url: url.into() });
+            for _ in 0..40 {
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Err(BackendError::new("отменено"));
+                }
+                wait(100);
+            }
+        }
+        let mut st = self.lock();
+        st.account = Some("tester_mac");
+        st.add_owned();
+        Ok(SteamAccount {
+            account_name: "tester_mac".into(),
+            steam_id: Some("••••4242".into()),
+        })
+    }
+
+    fn steam_logout(&self) -> Result<()> {
+        wait(500);
+        let mut st = self.lock();
+        st.account = None;
+        let queued: Vec<AppId> = st.jobs.iter().map(|j| j.appid).collect();
+        st.games.retain(|g| {
+            g.installed || queued.contains(&g.appid) || !OWNED_EXTRA.iter().any(|o| o.0 == g.appid)
+        });
+        Ok(())
+    }
+
+    fn owned_games(&self) -> Result<Vec<OwnedGame>> {
+        wait(900);
+        let st = self.lock();
+        if st.account.is_none() {
+            return Err(BackendError::new("не вошёл в Steam"));
+        }
+        let mut out: Vec<OwnedGame> = st
+            .games
+            .iter()
+            .map(|g| OwnedGame {
+                appid: g.appid,
+                name: g.name.into(),
+                cover: Cover::for_app(g.appid),
+                installed: g.installed,
+                windows: true,
+                size_bytes: Some((g.size_gb * 1e9) as u64),
+            })
+            .collect();
+        for &(appid, name, size_gb, windows) in OWNED_EXTRA {
+            if !out.iter().any(|g| g.appid == appid) {
+                out.push(OwnedGame {
+                    appid,
+                    name: name.into(),
+                    cover: Cover::for_app(appid),
+                    installed: false,
+                    windows,
+                    size_bytes: windows.then_some((size_gb * 1e9) as u64),
+                });
+            }
+        }
+        Ok(out)
     }
 
     fn install(&self, appid: AppId, library: Option<&Path>) -> Result<()> {

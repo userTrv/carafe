@@ -243,6 +243,10 @@ pub enum TaskEvent {
     CloudFile {
         file: CloudFile,
     },
+    /// Вход в Steam: нарисовать QR из `url`. В окно уходит уже SVG (`main.rs`), не сам URL.
+    Qr {
+        url: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -344,6 +348,28 @@ pub enum DownloadAction {
     Down,
 }
 
+/// Аккаунт Steam, под которым вошли через `carafe-steam` (QR из приложения Steam).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SteamAccount {
+    pub account_name: String,
+    /// Только маской: `••••1234`.
+    pub steam_id: Option<String>,
+}
+
+/// Игра из лицензий аккаунта — для полной библиотеки, вместе с неустановленными.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OwnedGame {
+    pub appid: AppId,
+    pub name: String,
+    pub cover: Cover,
+    pub installed: bool,
+    /// Есть ли Windows-сборка: без неё ставить нечего.
+    pub windows: bool,
+    pub size_bytes: Option<u64>,
+}
+
 fn unsupported<T>() -> Result<T> {
     Err(BackendError::new("не поддерживается этим ядром"))
 }
@@ -410,6 +436,27 @@ pub trait Backend: Send + Sync {
     }
 
     fn download_action(&self, _appid: AppId, _action: DownloadAction) -> Result<()> {
+        unsupported()
+    }
+
+    /// Под каким аккаунтом Steam вошли; без сети. `None` — не входили.
+    fn steam_account(&self) -> Result<Option<SteamAccount>> {
+        Ok(None)
+    }
+
+    /// Вход по QR: события `Qr { url }` (и новые, если Steam сменит код). Ждёт подтверждения
+    /// в приложении Steam; `cancel` — бросить вход.
+    fn steam_login(&self, _cancel: &AtomicBool, _events: Events) -> Result<SteamAccount> {
+        unsupported()
+    }
+
+    /// Выйти: отозвать вход в Steam и забыть токен.
+    fn steam_logout(&self) -> Result<()> {
+        unsupported()
+    }
+
+    /// Все купленные игры аккаунта (сеть, несколько секунд).
+    fn owned_games(&self) -> Result<Vec<OwnedGame>> {
         unsupported()
     }
 
