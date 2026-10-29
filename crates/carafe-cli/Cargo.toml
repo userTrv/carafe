@@ -1,0 +1,17 @@
+[package]
+name = "carafe-cli"
+description = "carafe — запускатель Windows-игр из Steam на macOS"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "carafe"
+path = "src/main.rs"
+
+[dependencies]
+carafe-core.workspace = true
+
+[lints]
+workspace = true

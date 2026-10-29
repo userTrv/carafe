@@ -6,9 +6,26 @@
 
 - **Wine + D3DMetal** — готовая сборка [Gcenx/game-porting-toolkit](https://github.com/Gcenx/game-porting-toolkit) (GPTK 3.0), DirectX 11/12 → Metal. Ничего не собирается, просто распаковывается.
 - **steamcmd** от Valve — качает Windows-сборку игры с твоего аккаунта.
-- Один bash-скрипт, всё хранится в `~/Library/Application Support/carafe`.
+- Всё хранится в `~/Library/Application Support/carafe`.
 
 Нужна Rosetta 2 (`softwareupdate --install-rosetta`).
+
+## Две версии: bash и Rust
+
+Логика переезжает на Rust: библиотека `crates/carafe-core` (на ней будет и GUI) и CLI `crates/carafe-cli` — бинарник `carafe` с теми же командами, переменными и сообщениями. `bin/carafe` на bash остаётся рабочим, пока Rust-версия не догонит его во всём; данные у них общие, их можно чередовать.
+
+```bash
+cargo build --release          # тулчейн — из rust-toolchain.toml
+target/release/carafe game run <appid>
+```
+
+В примерах ниже — `bin/carafe`; у `target/release/carafe` команды те же, плюс `carafe game list`. soju Rust-версия ищет в `CARAFE_SOJU` или в каталоге `soju` рядом с любым из предков бинарника (`~/Projects/soju` для `~/Projects/carafe/target/release/carafe`).
+
+Чем Rust-версия отличается:
+
+- appinfo разбирается настоящим VDF-парсером и кешируется в `games/<appid>/.carafe-appinfo.vdf` (имя игры для списка); правила облака по-прежнему в `.carafe-ufs`.
+- `game run` создаёт префикс до `cloud pull`, а неудачный pull (например, нет пользователя в префиксе) не прерывает запуск.
+- wine с игрой запускается напрямую через `soju-bridge exec`, без повторного вызова `carafe run`.
 
 ## Быстрый старт
 
@@ -67,4 +84,8 @@ bin/carafe cloud push <appid>
 | `CARAFE_EXE`    | exe игры, если автоопределение ошиблось     |
 | `CARAFE_HUD=1`  | Metal HUD с FPS                             |
 | `CARAFE_BRIDGE=0` | запуск без моста в Steam                  |
+| `CARAFE_CLOUD=0` | `game run` не трогает Steam Cloud          |
+| `CARAFE_ENGINE_DIR` | свой движок, например `dist/soju-engine` из soju |
+| `CARAFE_SOJU`   | checkout soju (по умолчанию `../soju`)      |
+| `CARAFE_HOME`   | где всё хранится                            |
 | `WINEDEBUG`     | логи Wine (по умолчанию выключены)          |
