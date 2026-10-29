@@ -1,5 +1,5 @@
-//! Ядро carafe — запускателя Windows-игр из Steam на macOS (Apple Silicon): движок Wine +
-//! D3DMetal, бутылки, игры через steamcmd, мост Steamworks из soju и Steam Cloud.
+//! Ядро carafe — запускателя Windows-игр из Steam на macOS (Apple Silicon): движок soju (Wine +
+//! D3DMetal из своей копии GPTK), бутылки, игры через steamcmd, мост Steamworks из soju и Steam Cloud.
 //!
 //! Всё начинается с [`Carafe`]: настройки ([`Config`]) и приёмник сообщений ([`Log`]). CLI
 //! печатает сообщения в stderr, GUI может забирать их себе через [`Carafe::with_logger`].
@@ -9,6 +9,7 @@
 
 pub mod account;
 pub mod appinfo;
+pub mod bottle;
 pub mod bridge;
 pub mod cloud;
 pub mod config;
@@ -21,6 +22,7 @@ pub mod launch;
 pub mod library;
 mod process;
 pub mod queue;
+pub mod release;
 pub mod steam;
 pub mod steamclient;
 pub mod vdf;
@@ -38,6 +40,7 @@ pub use config::{Config, parse_appid};
 pub use download::{
     DownloadEvent, DownloadRequest, DownloadStage, Downloader, MockDownloader, SteamCmdDownloader, StopFlag,
 };
+pub use engine::{ActiveSource, EngineKind, EngineStatus, InstalledEngine};
 pub use error::{Error, Result};
 pub use fsutil::human_bytes;
 pub use game::SteamApiDll;
@@ -45,6 +48,7 @@ pub use launch::LaunchEvent;
 pub use library::{DiskSpace, GameLocation, LibraryFolder, LibraryInfo, MoveKind, MoveProgress};
 pub use process::{Log, exit_code};
 pub use queue::{Job, JobKind, JobState, Queue, QueueEvent};
+pub use release::{Manifest, Release};
 pub use steamclient::{Account, AppDepots, Credentials, DepotEvent, DownloadResult, LoginEvent, OwnedApp};
 
 pub type Logger = Arc<dyn Fn(Log) + Send + Sync>;

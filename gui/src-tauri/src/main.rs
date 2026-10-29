@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 use tauri_plugin_dialog::DialogExt;
 
-use backend::{AppId, Backend, CheckId, DownloadAction, Profile, TaskEvent};
+use backend::{AppId, Backend, CheckId, DownloadAction, EngineKind, Profile, TaskEvent};
 
 /// Настройки GUI: профиль запуска и путь к checkout carafe для `CliBackend`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -218,6 +218,30 @@ fn fix(handle: AppHandle, app: State<'_, App>, check: CheckId) -> Result<(), Str
     })
 }
 
+/// Поставить движок: задача `engine:install` (soju) или `engine:gptk`.
+#[tauri::command]
+fn engine_install(handle: AppHandle, app: State<'_, App>, kind: EngineKind) -> Result<(), String> {
+    let task = match kind {
+        EngineKind::Soju => "engine:install",
+        EngineKind::Gptk => "engine:gptk",
+    };
+    spawn_task(handle, &app, task.into(), move |b, p, ev| {
+        match kind {
+            EngineKind::Soju => b.install_engine(p, ev),
+            EngineKind::Gptk => b.install_gptk(p, ev),
+        }
+        .map(|_| 0)
+    })
+}
+
+/// Сменить движок — задача `engine:use`: копии бутылок и `wineboot -u` новым движком.
+#[tauri::command]
+fn engine_use(handle: AppHandle, app: State<'_, App>, kind: EngineKind) -> Result<(), String> {
+    spawn_task(handle, &app, "engine:use".into(), move |b, p, ev| {
+        b.use_engine(kind, p, ev).map(|_| 0)
+    })
+}
+
 #[tauri::command]
 async fn libraries(app: State<'_, App>) -> Result<Value, String> {
     let b = app.backend();
@@ -411,6 +435,8 @@ fn main() {
             launch,
             build_bridge,
             fix,
+            engine_install,
+            engine_use,
             libraries,
             pick_folder,
             library_action,

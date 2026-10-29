@@ -21,6 +21,31 @@ pub enum Error {
     WineNotFound(PathBuf),
     #[error("sha256 архива не совпал")]
     EngineChecksum,
+    #[error("размер архива не совпал: ждали {}, скачано {}", crate::fsutil::human_bytes(*.want), crate::fsutil::human_bytes(*.got))]
+    EngineSize { want: u64, got: u64 },
+    #[error("движок «{0}»: бывает soju или gptk")]
+    UnknownEngine(String),
+    #[error("{name} не установлен: carafe engine install{}", if *.name == "soju" { "" } else { " gptk" })]
+    EngineNotInstalled { name: &'static str },
+    #[error("в архиве движка нет {}", .0.display())]
+    EngineBroken(PathBuf),
+    #[error("engine.json: {0}")]
+    BadManifest(String),
+    #[error("в {0} нет релизов движка (engine-v*)")]
+    NoEngineRelease(&'static str),
+    #[error("GitHub ограничил запросы без токена{}", .0.map(|m| format!(" — повтори через {m} мин")).unwrap_or_else(|| " — повтори позже".into()))]
+    GithubRateLimit(Option<u64>),
+    #[error("GitHub: {0}")]
+    Github(String),
+
+    #[error("в бутылке {0} что-то запущено (жив её wineserver) — закрой игру и повтори")]
+    BottleBusy(String),
+    #[error("нет бутылки {0}")]
+    NoBottle(String),
+    #[error("у бутылки {0} нет резервных копий")]
+    NoBackup(String),
+    #[error("{what} не закончил за {secs} с")]
+    Timeout { what: &'static str, secs: u64 },
 
     #[error("не нашёл exe в {} (задай CARAFE_EXE)", .0.display())]
     ExeNotFound(PathBuf),

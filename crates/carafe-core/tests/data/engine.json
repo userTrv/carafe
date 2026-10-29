@@ -1,0 +1,22 @@
+{
+  "format": 1,
+  "name": "soju-engine",
+  "version": "26.3.0",
+  "crossover": "26.3.0",
+  "wine": "11.0",
+  "patches": "f85893f398a6",
+  "built": "2026-10-29T06:30Z",
+  "archive": "soju-engine-26.3.0.tar.xz",
+  "root": "soju-engine-26.3.0",
+  "sha256": "9ac361f5159b68d31c4979673cd4c6defa7e8f719a9fedc1633fb5e947166d6d",
+  "size": 237592004,
+  "unpacked_size": 623435776,
+  "arch": "x86_64",
+  "rosetta": true,
+  "macos_min": "11.0",
+  "d3dmetal": {
+    "bundled": false,
+    "required": false,
+    "install": "bin/soju-d3dmetal"
+  }
+}

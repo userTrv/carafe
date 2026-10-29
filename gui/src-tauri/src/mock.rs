@@ -1,6 +1,8 @@
 //! Правдоподобные данные и задержки для разработки UI. Ничего не запускает и не пишет на диск.
 //!
-//! `CARAFE_MOCK=fresh` — первый запуск: нет движка, бутылки и запущенного Steam.
+//! `CARAFE_MOCK=fresh` — первый запуск: нет движка, бутылки и запущенного Steam. Без него —
+//! пользователь до soju: стоит и активен GPTK, soju можно поставить и перейти на него.
+//! `CARAFE_MOCK_ENGINE=soju` — soju уже стоит и активен.
 //!
 //! Библиотеки: встроенная, внешний SSD (по умолчанию) и отключённый архив с Hollow Knight.
 //! Очередь: Elden Ring качается на SSD, Baldur's Gate 3 ждёт; загрузку ведёт свой поток.
@@ -12,6 +14,9 @@ use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::backend::*;
+
+const SOJU: &str = "soju 26.3.0";
+const GPTK: &str = "GPTK 3.0";
 
 struct MockGame {
     appid: AppId,
@@ -48,7 +53,10 @@ struct MockJob {
 }
 
 struct State {
-    engine: bool,
+    /// Установлены soju и GPTK; какой активен.
+    soju: bool,
+    gptk: bool,
+    active: Option<EngineKind>,
     bottle: bool,
     steam: bool,
     games: Vec<MockGame>,
@@ -150,6 +158,7 @@ const DAY: u64 = 24 * HOUR;
 impl MockBackend {
     pub fn new() -> Self {
         let fresh = std::env::var("CARAFE_MOCK").is_ok_and(|v| v == "fresh");
+        let on_soju = !fresh && std::env::var("CARAFE_MOCK_ENGINE").is_ok_and(|v| v == "soju");
         use CloudAction::*;
         let games = vec![
             MockGame {
@@ -325,7 +334,15 @@ impl MockBackend {
             ]
         };
         let state = Arc::new(Mutex::new(State {
-            engine: !fresh,
+            soju: on_soju,
+            gptk: !fresh,
+            active: if fresh {
+                None
+            } else if on_soju {
+                Some(EngineKind::Soju)
+            } else {
+                Some(EngineKind::Gptk)
+            },
             bottle: !fresh,
             steam: !fresh,
             games,
@@ -391,6 +408,30 @@ impl Backend for MockBackend {
     fn environment(&self, _profile: &Profile) -> Result<Environment> {
         wait(250);
         let st = self.state.lock().expect("mock state");
+        // D3DMetal у soju — из копии GPTK; у GPTK он свой.
+        let d3dmetal = match st.active {
+            Some(EngineKind::Soju) => st.gptk,
+            Some(EngineKind::Gptk) => true,
+            None => false,
+        };
+        let mut engines: Vec<EngineInfo> = [
+            (st.soju, EngineKind::Soju, SOJU, st.gptk),
+            (st.gptk, EngineKind::Gptk, GPTK, true),
+        ]
+        .into_iter()
+        .filter(|(installed, ..)| *installed)
+        .map(|(_, kind, name, d3dmetal)| EngineInfo {
+            // Активный — первым и с пустым id: «как в carafe».
+            id: if st.active == Some(kind) {
+                String::new()
+            } else {
+                kind.as_str().into()
+            },
+            name: name.into(),
+            d3dmetal,
+        })
+        .collect();
+        engines.sort_by_key(|e| !e.id.is_empty());
         let check = |id, ok, fixable| Check {
             id,
             ok,
@@ -400,25 +441,28 @@ impl Backend for MockBackend {
         Ok(Environment {
             checks: vec![
                 check(CheckId::Rosetta, true, false),
-                check(CheckId::Engine, st.engine, true),
-                check(CheckId::D3dMetal, st.engine, true),
+                check(CheckId::Engine, st.active.is_some(), true),
+                check(CheckId::D3dMetal, d3dmetal, st.active.is_some()),
                 check(CheckId::Bottle, st.bottle, true),
                 check(CheckId::Bridge, true, false),
                 check(CheckId::Steam, st.steam, true),
             ],
-            engines: vec![
-                EngineInfo {
-                    id: "gptk-3.0-3".into(),
-                    name: "GPTK 3.0-3".into(),
-                    d3dmetal: true,
-                },
-                EngineInfo {
-                    id: "soju-engine".into(),
-                    name: "soju · Wine 11.0".into(),
-                    d3dmetal: true,
-                },
-            ],
+            engines,
             bottles: vec!["default".into(), "soju-test".into()],
+            engine: Some(EngineState {
+                label: match st.active {
+                    Some(EngineKind::Soju) => SOJU.into(),
+                    Some(EngineKind::Gptk) => GPTK.into(),
+                    None => "soju".into(),
+                },
+                kind: st.active,
+                ready: st.active.is_some(),
+                d3dmetal,
+                custom: false,
+                soju: st.soju.then(|| SOJU.into()),
+                gptk: st.gptk.then(|| GPTK.into()),
+                suggest_soju: st.active == Some(EngineKind::Gptk),
+            }),
         })
     }
 
@@ -589,7 +633,54 @@ impl Backend for MockBackend {
         stage(events, Stage::Unpack, StageStatus::Active);
         wait(1200);
         stage(events, Stage::Unpack, StageStatus::Done);
-        self.state.lock().expect("mock state").engine = true;
+        let mut st = self.state.lock().expect("mock state");
+        st.soju = true;
+        // Новый пользователь получает soju; тот, кто на GPTK, переходит сам.
+        st.active.get_or_insert(EngineKind::Soju);
+        Ok(())
+    }
+
+    fn install_gptk(&self, _profile: &Profile, events: Events) -> Result<()> {
+        stage(events, Stage::Download, StageStatus::Active);
+        for i in 1..=10 {
+            wait(120);
+            events(TaskEvent::Progress {
+                stage: Stage::Download,
+                fraction: i as f32 / 10.0,
+            });
+        }
+        stage(events, Stage::Download, StageStatus::Done);
+        let mut st = self.state.lock().expect("mock state");
+        st.gptk = true;
+        st.active.get_or_insert(EngineKind::Gptk);
+        Ok(())
+    }
+
+    fn use_engine(&self, kind: EngineKind, _profile: &Profile, events: Events) -> Result<()> {
+        {
+            let st = self.state.lock().expect("mock state");
+            let installed = match kind {
+                EngineKind::Soju => st.soju,
+                EngineKind::Gptk => st.gptk,
+            };
+            if !installed {
+                return Err(BackendError::new(format!(
+                    "{} не установлен",
+                    kind.as_str()
+                )));
+            }
+        }
+        stage(events, Stage::Migrate, StageStatus::Active);
+        for line in [
+            "==> default: резервная копия → bottles/default.backup-20261030-120000",
+            "==> default: wineboot -u",
+            "==> default: обновлена за 24 с",
+        ] {
+            wait(700);
+            log(events, line);
+        }
+        stage(events, Stage::Migrate, StageStatus::Done);
+        self.state.lock().expect("mock state").active = Some(kind);
         Ok(())
     }
 

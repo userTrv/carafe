@@ -229,6 +229,11 @@ listen("task-end", ({ payload }) => {
   const [kind, id] = payload.task.split(":");
   if (!payload.ok) toast(payload.error);
   else if (kind === "bridge") toast("Мост собран", "ok");
+  else if (payload.task === "engine:use") toast(`Движок: ${S.confirm?.label || "сменён"}`, "ok");
+  if (kind === "engine") {
+    S.confirm = null;
+    loadEnv();
+  }
   if (kind === "launch" || kind === "bridge") {
     loadGames();
     if (S.view === "game" && S.appid === Number(id)) loadCloud(Number(id));
@@ -246,7 +251,7 @@ function refreshTaskViews(name, kind) {
     if (type === "launch" && !$("#log")) renderLog();
   }
   if (S.view === "library" && type === "launch") renderLibraryBody();
-  if (S.view === "setup" && type === "fix") renderSetup();
+  if (S.view === "setup" && (type === "fix" || type === "engine")) renderSetup();
 }
 
 /* ---------- навигация ---------- */
@@ -780,6 +785,7 @@ function renderSetup() {
               : ""
         }
       </div>
+      ${engineCard(env?.engine)}
       <div class="checks">
         ${
           checks.length
@@ -792,6 +798,73 @@ function renderSetup() {
   if (f) f.onclick = fixAll;
   const lib = main.querySelector("[data-go]");
   if (lib) lib.onclick = () => go("library");
+  wireEngineCard();
+}
+
+/* Движок: soju по умолчанию, GPTK — запасной и источник D3DMetal. Смена движка — с подтверждением:
+   бутылки сначала копируются рядом. */
+function engineCard(e) {
+  if (!e) return "";
+  const install = task("engine:install");
+  const using = running("engine:use");
+  const busy = running("engine:install") || using || running("engine:gptk") || S.fixing;
+  const prog = install?.running ? install.progress.download : undefined;
+  const unpacking = install?.running && install.stages.unpack?.status === "active";
+  let actions = "";
+  if (S.confirm) {
+    actions = `<span class="engine-note mono">КОПИЯ БУТЫЛОК РЯДОМ</span>
+      <button class="btn btn-sm" data-engine-cancel ${using ? "disabled" : ""}>Отмена</button>
+      <button class="btn btn-sm btn-primary" data-engine-go ${using ? "disabled" : ""}>${I.move}${using ? "Переношу" : S.confirm.action}</button>`;
+  } else if (!e.custom) {
+    if (!e.soju)
+      actions = `<button class="btn btn-sm ${e.kind ? "" : "btn-primary"}" data-engine-install ${busy ? "disabled" : ""}>${I.download}${
+        install?.running ? (unpacking ? "Распаковываю" : `Скачиваю${prog !== undefined ? ` ${Math.round(prog * 100)}%` : ""}`) : "Установить soju"
+      }</button>`;
+    else if (e.kind === "gptk")
+      actions = `<button class="btn btn-sm btn-primary" data-engine-use="soju" ${busy ? "disabled" : ""}>${I.move}Перейти на soju</button>`;
+    if (e.kind === "soju" && e.gptk)
+      actions += `<button class="btn btn-sm btn-quiet" data-engine-use="gptk" ${busy ? "disabled" : ""}>Вернуться на GPTK</button>`;
+  }
+  const tags = [
+    e.ready ? `<span class="tag plain">${e.d3dmetal ? "D3DMETAL" : "БЕЗ D3DMETAL"}</span>` : `<span class="tag plain">НЕ УСТАНОВЛЕН</span>`,
+    e.custom ? `<span class="tag plain">ИЗ НАСТРОЕК</span>` : "",
+    e.suggestSoju ? `<span class="tag plain">ПО УМОЛЧАНИЮ ТЕПЕРЬ SOJU</span>` : "",
+  ].join("");
+  return `<section class="engine rise" aria-label="Движок">
+    <span class="check-ico">${I.wrench}</span>
+    <div class="engine-body">
+      <span class="caption">ДВИЖОК</span>
+      <div class="engine-name mono">${esc(e.label)}</div>
+      <div class="tags">${tags}</div>
+      ${install?.running && prog !== undefined && !unpacking ? `<div class="bar"><i style="transform:scaleX(${prog})"></i></div>` : ""}
+    </div>
+    ${actions ? `<div class="engine-actions">${actions}</div>` : ""}
+  </section>`;
+}
+
+function wireEngineCard() {
+  const b = (sel) => main.querySelector(sel);
+  const inst = b("[data-engine-install]");
+  if (inst) inst.onclick = () => start("engine_install", { kind: "soju" }, "engine:install");
+  main.querySelectorAll("[data-engine-use]").forEach((el) => {
+    el.onclick = () => {
+      const kind = el.dataset.engineUse;
+      const e = S.env?.env.engine;
+      S.confirm =
+        kind === "soju"
+          ? { kind, action: "Перейти на soju", label: e?.soju || "soju" }
+          : { kind, action: "Вернуться на GPTK", label: e?.gptk || "GPTK" };
+      renderSetup();
+    };
+  });
+  const cancel = b("[data-engine-cancel]");
+  if (cancel)
+    cancel.onclick = () => {
+      S.confirm = null;
+      renderSetup();
+    };
+  const goBtn = b("[data-engine-go]");
+  if (goBtn) goBtn.onclick = () => start("engine_use", { kind: S.confirm.kind }, "engine:use");
 }
 
 function checkRow(c, i, working) {

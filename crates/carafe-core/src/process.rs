@@ -58,6 +58,28 @@ pub(crate) fn run_lines(
     capture_stdout: bool,
     on_line: &mut dyn FnMut(Stream, &str),
 ) -> Result<ExitStatus> {
+    run_lines_inner(cmd, capture_stdout, None, on_line)
+}
+
+/// То же с пределом по времени: не уложилась — программа получает SIGKILL, ошибка
+/// [`Error::Timeout`]. Её потомков (wineserver) убирает вызывающий.
+pub(crate) fn run_lines_timeout(
+    cmd: &mut Command,
+    capture_stdout: bool,
+    limit: Duration,
+    what: &'static str,
+    on_line: &mut dyn FnMut(Stream, &str),
+) -> Result<ExitStatus> {
+    run_lines_inner(cmd, capture_stdout, Some((limit, what)), on_line)
+}
+
+fn run_lines_inner(
+    cmd: &mut Command,
+    capture_stdout: bool,
+    limit: Option<(Duration, &'static str)>,
+    on_line: &mut dyn FnMut(Stream, &str),
+) -> Result<ExitStatus> {
+    let started = std::time::Instant::now();
     cmd.stderr(Stdio::piped());
     if capture_stdout {
         cmd.stdout(Stdio::piped());
@@ -80,6 +102,13 @@ pub(crate) fn run_lines(
         }
         if let Some(st) = child.try_wait().transpose() {
             break st;
+        }
+        if let Some((limit, what)) = limit
+            && started.elapsed() > limit
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(Error::Timeout { what, secs: limit.as_secs() });
         }
     };
     let status = status.map_err(spawn_err(cmd))?;
@@ -141,5 +170,15 @@ mod tests {
         run_lines(&mut cmd, false, &mut |_, l| got.push(l.to_string())).unwrap();
         assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
         assert_eq!(got, ["done"]);
+    }
+
+    #[test]
+    fn timeout_kills() {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "echo start >&2; sleep 30"]);
+        let t = std::time::Instant::now();
+        let r = run_lines_timeout(&mut cmd, false, Duration::from_millis(500), "sleep", &mut |_, _| {});
+        assert!(matches!(r, Err(Error::Timeout { what: "sleep", .. })), "{r:?}");
+        assert!(t.elapsed() < Duration::from_secs(5));
     }
 }
