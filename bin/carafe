@@ -14,25 +14,10 @@ ENGINE_URL="https://github.com/Gcenx/game-porting-toolkit/releases/download/Game
 ENGINE_SHA256="d377683937340f914823dbb2e1252b329cbf834ff58907d0293db8cebf0e392e"
 STEAMCMD_URL="https://steamcdn-a.akamaihd.net/client/installer/steamcmd_osx.tar.gz"
 
-# Мост Steamworks: zig собирает Windows-DLL, Mac-библиотека Steam — из того же релиза SDK, что у игры.
 CARAFE_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Мост Steamworks живёт в движке soju (bin/soju-bridge): по умолчанию — checkout рядом с carafe.
+SOJU_SRC="${CARAFE_SOJU:-$(cd "$CARAFE_SRC/.." && pwd)/soju}"
 BRIDGES="$CARAFE_HOME/bridge"
-ZIG_VERSION="0.17.0"
-ZIG_URL="https://ziglang.org/download/$ZIG_VERSION/zig-aarch64-macos-$ZIG_VERSION.tar.xz"
-ZIG_SHA256="b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a"
-# SDK Steamworks (каталог bridge/sdk/<версия> с его steam_api.json) → "коммит Steamworks.NET
-# с libsteam_api.dylib того же SDK  sha256 этого dylib". SDK игры узнаёт bridge/sdk_detect.py.
-# Функция, а не ассоциативный массив: в macOS bash 3.2.
-steamapi_mac() {
-  case "$1" in
-    1.57) echo "a3fe8091f7237eef3f38becc3faa29b2dc6f9ce9 4d47f19bdea2e7aba06a052570855903376ae47accca439ae9fb184528846d85" ;;  # Steamworks.NET 20.2.0
-    1.60) echo "a2fc889ab2672981ec3e6225d551d86ce6923121 025a42fe02a40411429bc6afa7ff0092547408b03bf57d89da68413faed80176" ;;  # Steamworks.NET 2024.8.0
-    1.61) echo "eb0f4beeb7af1188b475602269b253dd2ec4aaed b2260d2b2ff6ac8d2d10770047967ceb18022fc5c27f94e3246bd7d2a1da82c0" ;;  # Steamworks.NET 2025.161.0
-    1.62) echo "af710043b9097e8ffedf74d67503c3a7eb498260 d828cbd6365daa2b16d3bd7dc2969c60e97f497c0996a6def0b7b174a7e19953" ;;  # Steamworks.NET 2025.162.1
-    1.63) echo "98d6584e4509dd514768cc28c3f02026fbdd6cc7 7824c030a7626ac1de9f1c6e03d45276721aa88ac419954b235cccf4546b15b3" ;;  # Steamworks.NET 2025.163.0
-    1.64) echo "c21a8f0e31c56ae8707130967faf491f7dd7c0d8 1e2282e1032851e423b501c2c483586793f1d5e11585edaae4c78d6a3abad1eb" ;;  # Steamworks.NET 2025.164.1
-  esac
-}
 
 die() { echo "carafe: $*" >&2; exit 1; }
 log() { echo "==> $*" >&2; }
@@ -46,7 +31,7 @@ usage() {
   carafe game install APPID USER   скачать Windows-сборку игры через steamcmd
   carafe game import APPID [DIR]   забрать depot, скачанный консолью Steam (download_depot)
   carafe game run APPID [ARGS...]  запустить игру (exe ищется в папке игры)
-  carafe bridge build APPID|DLL    собрать мост в Steam для Mac (ачивки, лидерборды)
+  carafe bridge build APPID|DLL    собрать мост в Steam для Mac (ачивки, лидерборды) — из soju
   carafe bridge test APPID|DLL     проверить мост на Spacewar (480) против нативного Steam
   carafe cloud status|pull|push APPID  сейвы со Steam Cloud (game run делает pull/push сам)
   carafe run EXE [ARGS...]         запустить произвольный .exe в префиксе
@@ -54,16 +39,20 @@ usage() {
 
 Переменные: CARAFE_BOTTLE (префикс, default), CARAFE_EXE (exe игры вручную),
             CARAFE_HUD=1 (Metal HUD с FPS), CARAFE_BRIDGE=0 (запуск без моста).
+            CARAFE_ENGINE_DIR (свой движок, например dist/soju-engine из soju),
+            CARAFE_SOJU (checkout soju, по умолчанию ../soju рядом с carafe).
 EOF
 }
 
-engine_dir() { echo "$ENGINES/$ENGINE_NAME"; }
+# CARAFE_ENGINE_DIR — свой движок вместо скачанного, например собранный soju (dist/soju-engine).
+engine_dir() { echo "${CARAFE_ENGINE_DIR:-$ENGINES/$ENGINE_NAME}"; }
 
 wine_bin() {
   local d; d="$(engine_dir)"
   [[ -d "$d" ]] || die "движок не установлен: carafe engine install"
   local w
-  for name in wine64 wine; do
+  # bin/soju — wine движка soju с его настройками (msync, D3DMetal).
+  for name in soju wine64 wine; do
     w="$(find "$d" -type f -path "*/bin/$name" -perm -u+x 2>/dev/null | head -1)"
     [[ -n "$w" ]] && { echo "$w"; return; }
   done
@@ -205,17 +194,9 @@ steam_api_orig() {
   fi
 }
 
-ensure_zig() {
-  local z="$CARAFE_HOME/toolchain/zig-aarch64-macos-$ZIG_VERSION/zig"
-  if [[ ! -x "$z" ]]; then
-    log "качаю zig $ZIG_VERSION (нужен только для сборки моста)"
-    mkdir -p "$CARAFE_HOME/toolchain"
-    curl -fL --retry 5 -o "$CARAFE_HOME/toolchain/zig.tar.xz" "$ZIG_URL"
-    echo "$ZIG_SHA256  $CARAFE_HOME/toolchain/zig.tar.xz" | shasum -a 256 -c - >/dev/null || die "sha256 zig не совпал"
-    tar -xJf "$CARAFE_HOME/toolchain/zig.tar.xz" -C "$CARAFE_HOME/toolchain"
-    rm "$CARAFE_HOME/toolchain/zig.tar.xz"
-  fi
-  echo "$z"
+soju_bridge() {
+  [[ -x "$SOJU_SRC/bin/soju-bridge" ]] || die "нужен soju: git clone https://github.com/userTrv/soju рядом с carafe (или CARAFE_SOJU)"
+  "$SOJU_SRC/bin/soju-bridge" "$@"
 }
 
 # Оригинальный steam_api64.dll: игры по APPID или файл по пути (проверить мост на SDK без игры).
@@ -227,28 +208,11 @@ bridge_source_dll() {
 }
 
 cmd_bridge_build() {
-  local orig sha entry commit dsha
+  local orig sha
   orig="$(bridge_source_dll "${1:-}")"
   sha="$(shasum -a 256 "$orig" | cut -d' ' -f1)"
-  local sdk; sdk="$(python3 -I "$CARAFE_SRC/bridge/sdk_detect.py" "$orig" "$CARAFE_SRC/bridge/sdk")" \
-    || die "мост для этого SDK пока не собрать: нужен его steam_api.json в bridge/sdk/ и строка в steamapi_mac"
-  entry="$(steamapi_mac "$sdk")"
-  [[ -n "$entry" ]] || die "SDK $sdk: нет libsteam_api.dylib в steamapi_mac"
-  commit="${entry% *}" dsha="${entry#* }"
-  log "SDK Steamworks игры: $sdk"
-  local out="$BRIDGES/$sha" dylib="$BRIDGES/$sha/src/libsteam_api.dylib"
-  mkdir -p "$out/src"
-  if [[ ! -f "$dylib" ]]; then
-    log "качаю libsteam_api.dylib (Steamworks.NET ${commit:0:10})"
-    # Через API, а не raw.githubusercontent.com: тот у части провайдеров недоступен.
-    curl -fsSL --retry 5 -H 'Accept: application/vnd.github.raw' -o "$dylib" \
-      "https://api.github.com/repos/rlabrecque/Steamworks.NET/contents/com.rlabrecque.steamworks.net/Plugins/steam_api.bundle/Contents/MacOS/libsteam_api.dylib?ref=$commit"
-  fi
-  echo "$dsha  $dylib" | shasum -a 256 -c - >/dev/null || { rm -f "$dylib"; die "sha256 libsteam_api.dylib не совпал"; }
-  ZIG="$(ensure_zig)" "$CARAFE_SRC/bridge/build.sh" "$orig" "$dylib" "$CARAFE_SRC/bridge/sdk/$sdk/steam_api.json" "$out"
-  echo "$sdk" > "$out/sdk"
-  xattr -dr com.apple.quarantine "$out" 2>/dev/null || true
-  log "мост готов: $out"
+  soju_bridge build "$orig" "$BRIDGES/$sha" >/dev/null
+  log "мост готов: $BRIDGES/$sha"
 }
 
 # Поставить DLL моста (или вернуть оригинал). Печатает каталог моста, если он включён.
@@ -258,7 +222,7 @@ apply_bridge() {
   live="${pair%%|*}" orig="${pair##*|}"
   sha="$(shasum -a 256 "$orig" | cut -d' ' -f1)"
   local b="$BRIDGES/$sha"
-  if [[ "${CARAFE_BRIDGE:-1}" == 0 || ! -x "$b/carafe-steamd" ]]; then
+  if [[ "${CARAFE_BRIDGE:-1}" == 0 || ! -x "$b/soju-steamd" ]]; then
     if [[ "$orig" != "$live" ]]; then
       log "мост выключен: возвращаю оригинальный steam_api64.dll"
       cp "$orig" "$live"
@@ -273,65 +237,8 @@ apply_bridge() {
   echo "$b"
 }
 
-# Хелпер моста: живёт, пока подключённая игра не уйдёт. SteamAppId говорит Steam, за какую игру он выступает.
-# Ставит CARAFE_BRIDGE_PORT/CARAFE_BRIDGE_TOKEN для заглушки и STEAMD_PID.
-start_steamd() {
-  local bridge="$1" appid="$2" fifo
-  fifo="$(mktemp -u "${TMPDIR:-/tmp}/carafe-steamd.XXXXXX")"
-  mkfifo "$fifo"
-  CARAFE_BRIDGE_TOKEN="$(head -c 32 /dev/urandom | xxd -p -c 64)"
-  export CARAFE_BRIDGE_TOKEN
-  CARAFE_BRIDGE_LOG="$CARAFE_HOME/bridge-$appid.log" SteamAppId="$appid" SteamGameId="$appid" \
-    "$bridge/carafe-steamd" > "$fifo" &
-  STEAMD_PID=$!
-  local port; read -r port < "$fifo"; rm -f "$fifo"
-  [[ "$port" =~ ^[0-9]+$ ]] || { kill "$STEAMD_PID" 2>/dev/null; die "carafe-steamd не запустился"; }
-  export CARAFE_BRIDGE_PORT="$port"
-  log "мост в Steam: порт $port, лог $CARAFE_HOME/bridge-$appid.log"
-}
-
-# Прогнать bridge/test/steamtest.c на Spacewar (480): нативно на Mac и под Wine через мост игры APPID.
-cmd_bridge_test() {
-  local orig sha
-  orig="$(bridge_source_dll "${1:-}")"
-  sha="$(shasum -a 256 "$orig" | cut -d' ' -f1)"
-  local b="$BRIDGES/$sha" t="$BRIDGES/$sha/test"
-  [[ -x "$b/carafe-steamd" ]] || die "мост не собран: carafe bridge build $1"
-  mkdir -p "$t"
-  local zig src="$CARAFE_SRC/bridge/test"
-  zig="$(ensure_zig)"
-  # C++-часть: заголовок по слотам DLL игры; под Mac — Itanium ABI, под Windows — ABI MSVC, как у игр.
-  python3 -I "$src/gen_header.py" "$CARAFE_SRC/bridge/sdk/$(cat "$b/sdk")/steam_api.json" "$orig" "$t/steam_iface.hpp"
-  clang++ -std=c++17 -O1 -fno-exceptions -fno-rtti -I"$t" -c -o "$t/cpptest.o" "$src/cpptest.cpp"
-  clang -O1 -Wall -I"$t" -c -o "$t/steamtest.o" "$src/steamtest.c"
-  clang++ -o "$t/steamtest" "$t/steamtest.o" "$t/cpptest.o"
-  clang -target x86_64-pc-windows-msvc -std=c++17 -O1 -fno-exceptions -fno-rtti -fno-autolink -fno-stack-protector \
-    -x c++ -I"$t" -c -o "$t/cpptest.obj" "$src/cpptest.cpp"
-  "$zig" cc -target x86_64-windows-gnu -O1 -Wall -I"$t" -o "$t/steamtest.exe" "$src/steamtest.c" "$t/cpptest.obj"
-  cp "$b/steam_api64.dll" "$t/steam_api64.dll"
-
-  # В сравнение идут только строки теста: шум libsteam_api и Wine, CRLF Windows-сборки — мимо.
-  local clean='s/\r$//; /^(#|[A-Za-z0-9_.]+ = )/!d' mode
-  : > "$t/native.txt"
-  : > "$t/bridged.txt"
-  for mode in flat cpp; do
-    log "$mode: нативно (libsteam_api.dylib)"
-    (cd "$t" && SteamAppId=480 ./steamtest "$b/libsteam_api.dylib" "$mode" 2>&1) | sed -E "$clean" >> "$t/native.txt" || true
-    log "$mode: под Wine через мост"
-    start_steamd "$b" 480
-    ( cmd_run "$t/steamtest.exe" steam_api64.dll "$mode" ) 2>&1 | sed -E "$clean" >> "$t/bridged.txt" || true
-    wait "$STEAMD_PID" 2>/dev/null || true
-  done
-
-  local fails; fails="$(cat "$t/native.txt" "$t/bridged.txt" | grep -c FAIL || true)"
-  if diff <(grep -v '^#' "$t/native.txt") <(grep -v '^#' "$t/bridged.txt") > "$t/diff.txt" && [[ "$fails" == 0 ]] \
-     && grep -q '^init = 0$' "$t/bridged.txt"; then
-    log "совпало, провалов нет ($(grep -vc '^#' "$t/bridged.txt") строк): $t"
-  else
-    cat "$t/diff.txt" >&2
-    die "мост расходится с нативным Steam или есть провалы: $t/{native,bridged,diff}.txt"
-  fi
-}
+# Проверка моста на Spacewar (480) против нативного Steam — в soju, на его движке.
+cmd_bridge_test() { soju_bridge test "$(bridge_source_dll "${1:-}")"; }
 
 # Правила Auto-Cloud игры (ufs/savefiles из appinfo) → строки ROOT:PATH:PATTERN:RECURSIVE.
 cloud_rules() {
@@ -361,7 +268,7 @@ cloud_sync() {
   pair="$(steam_api_orig "$GAMES/$appid")" || die "в игре нет steam_api64.dll — облака у неё нет"
   orig="${pair##*|}"
   sha="$(shasum -a 256 "$orig" | cut -d' ' -f1)"
-  local steamd="$BRIDGES/$sha/carafe-steamd"
+  local steamd="$BRIDGES/$sha/soju-steamd"
   [[ -x "$steamd" ]] || die "сначала собери мост: carafe bridge build $appid"
   local users="$BOTTLES/${CARAFE_BOTTLE:-default}/drive_c/users" u
   u="$(find "$users" -mindepth 1 -maxdepth 1 -type d ! -name Public | head -1)"
@@ -396,13 +303,12 @@ cmd_game_run() {
     cloud=0
   fi
 
-  start_steamd "$bridge" "$appid"
   log "запускаю $exe"
   local rc=0
-  ( cmd_run "$exe" "$@" ) || rc=$?
-  # Лаунчер wine может выйти раньше игры, поэтому хелпер не убиваем: он сам завершится,
-  # когда игра закроет соединение (или через 2 минуты, если она так и не подключилась).
-  wait "$STEAMD_PID" 2>/dev/null || true
+  # Хелпер моста живёт, пока игра не отключится от Steam: soju-bridge exec ждёт и его,
+  # а не только лаунчер wine, который может выйти раньше игры.
+  SOJU_BRIDGE_LOG="$CARAFE_HOME/bridge-$appid.log" soju_bridge exec "$bridge" "$appid" \
+    "$CARAFE_SRC/bin/carafe" run "$exe" "$@" || rc=$?
   # Хелпер выходит, когда игра отключилась, — значит, сейвы уже на диске.
   if [[ "$cloud" == 1 ]]; then
     cloud_sync push "$appid" || log "Steam Cloud: выгрузка не удалась — повтори: carafe cloud push $appid"
