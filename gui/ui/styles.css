@@ -909,11 +909,45 @@ svg {
 
 .game-hero {
   position: relative;
+  z-index: 1;
   min-height: 480px;
   display: flex;
   align-items: flex-end;
+}
+
+/* Фон экрана игры: размытый арт на всё окно и чёткая полоса шапки поверх. Двигаются
+   только transform и opacity (followBackdrop в app.js), размытие статичное. */
+.game-backdrop {
+  position: fixed;
+  inset: 0;
   overflow: hidden;
-  background: var(--surface);
+  pointer-events: none;
+  background: var(--bg);
+}
+
+.game-backdrop .bd-blur {
+  filter: blur(48px) saturate(1.3);
+  transform: scale(1.2);
+  opacity: 0.6;
+  transition: none;
+}
+
+.bd-shade {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.bd-band {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 480px;
+  transform-origin: 50% 0;
+  will-change: transform, opacity;
+  -webkit-mask-image: linear-gradient(#000 70%, transparent);
+  mask-image: linear-gradient(#000 70%, transparent);
 }
 
 .game-hero .back {
@@ -1042,6 +1076,8 @@ svg {
   flex-wrap: wrap;
   gap: 24px;
   align-items: flex-start;
+  position: relative;
+  z-index: 1;
 }
 
 .panel {
@@ -1497,4 +1533,11 @@ svg {
     transform: scaleX(1);
     opacity: 0.6;
   }
+}
+
+/* Панели экрана игры — стекло поверх размытого арта, как верхняя панель. */
+.game-body .panel {
+  background: rgba(24, 24, 24, 0.72);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
 }
