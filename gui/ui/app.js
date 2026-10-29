@@ -12,7 +12,6 @@ const S = {
   games: null,
   env: null,
   settings: null,
-  filter: "all",
   q: "",
   cloud: {}, // appid → { loading, data, error }
   tasks: {}, // task → { running, stages, progress, ok, error }
@@ -25,66 +24,40 @@ const main = $("#main");
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
-/* ---------- иконки ---------- */
-
-const I = {
-  play: '<svg viewBox="0 0 24 24"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z"/></svg>',
-  trophy: '<svg viewBox="0 0 24 24"><path d="M8 4h8v6a4 4 0 0 1-8 0zM8 6H5a3 3 0 0 0 3 4M16 6h3a3 3 0 0 1-3 4M12 14v4M8 20h8"/></svg>',
-  cloud: '<svg viewBox="0 0 24 24"><path d="M7 18a4 4 0 0 1-.6-7.96A6 6 0 0 1 18 9a4.5 4.5 0 0 1-.5 9z"/></svg>',
-  cloudOff: '<svg viewBox="0 0 24 24"><path d="M7 18a4 4 0 0 1-.6-7.96M9.5 6.6A6 6 0 0 1 18 9a4.5 4.5 0 0 1 2 8.2M3 3l18 18"/></svg>',
-  down: '<svg viewBox="0 0 24 24"><path d="M12 4v14M6 12l6 6 6-6"/></svg>',
-  up: '<svg viewBox="0 0 24 24"><path d="M12 20V6M6 12l6-6 6 6"/></svg>',
-  check: '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
-  alert: '<svg viewBox="0 0 24 24"><path d="M12 8v5M12 16.5v.5"/><circle cx="12" cy="12" r="9"/></svg>',
-  x: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>',
-  conflict: '<svg viewBox="0 0 24 24"><path d="M7 4v10M4 11l3 3 3-3M17 20V10M14 13l3-3 3 3"/></svg>',
-  bridge: '<svg viewBox="0 0 24 24"><path d="M3 17h18M5 17V9M19 17V9M5 9c3 4 11 4 14 0M9 17v-4.5M15 17v-4.5"/></svg>',
-  game: '<svg viewBox="0 0 24 24"><path d="M7 8h10a4 4 0 0 1 4 4v1a3 3 0 0 1-5.4 1.8L15 14H9l-.6.8A3 3 0 0 1 3 13v-1a4 4 0 0 1 4-4zM8 11v3M6.5 12.5h3"/><circle cx="16" cy="12" r=".6"/></svg>',
-  back: '<svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>',
-  search: '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/></svg>',
-  refresh: '<svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.5-4.5L4 8M4 4v4h4M4 13a8 8 0 0 0 14.5 4.5L20 16M20 20v-4h-4"/></svg>',
-  wrench: '<svg viewBox="0 0 24 24"><path d="M14.5 6.5a4 4 0 0 0 5 5L13 18a2.1 2.1 0 0 1-3-3zM14.5 6.5L17 4a4 4 0 0 0-5.5 5.5"/></svg>',
-  chip: '<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M10 3v3M14 3v3M10 18v3M14 18v3M3 10h3M3 14h3M18 10h3M18 14h3"/></svg>',
-  box: '<svg viewBox="0 0 24 24"><path d="M4 8l8-4 8 4v8l-8 4-8-4zM4 8l8 4 8-4M12 12v8"/></svg>',
-  steam: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="15" cy="10" r="2.5"/><path d="M3.5 14l5 2M13 11.5l-4.5 4.5"/></svg>',
-  cpu: '<svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 16 0 8 8 0 1 0-16 0M12 8v4l3 2"/></svg>',
-  metal: '<svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9zM12 12l8-4.5M12 12v9M12 12L4 7.5"/></svg>',
-};
-
 /* ---------- тексты ---------- */
 
 const CHECKS = {
   rosetta: { name: "Rosetta 2", missing: "Нет Rosetta 2", icon: I.cpu },
-  engine: { name: "Движок", missing: "Движок не установлен", icon: I.chip },
+  engine: { name: "Движок", missing: "Движок не установлен", icon: I.wrench },
   d3dMetal: { name: "D3DMetal", missing: "Нет D3DMetal", icon: I.metal },
   bottle: { name: "Бутылка", missing: "Нет бутылки", icon: I.box },
   bridge: { name: "Мост soju", missing: "Нет soju", icon: I.bridge },
   steam: { name: "Steam для Mac", missing: "Steam для Mac не запущен", icon: I.steam },
 };
 const FIX_ORDER = ["engine", "d3dMetal", "bottle", "steam"];
-const FIX_LABEL = { steam: "Открыть Steam" };
 
+// Этапы запуска — те, что шлёт бэкенд (`Stage` в backend.rs), по порядку.
 const STAGES = [
-  { id: "cloudPull", name: "Из облака", icon: I.down },
-  { id: "bridge", name: "Мост", icon: I.bridge },
-  { id: "game", name: "Игра", icon: I.game },
-  { id: "cloudPush", name: "В облако", icon: I.up },
+  { id: "cloudPull", name: "Облако: скачиваю сохранения", short: "Облако" },
+  { id: "bridge", name: "Мост Steam", short: "Мост" },
+  { id: "game", name: "В игре", short: "Игра" },
+  { id: "cloudPush", name: "Облако: выгружаю сохранения", short: "Облако" },
 ];
 
 const CLOUD = {
-  synced: { label: "Облако в порядке", cls: "ok", icon: I.cloud },
-  pending: { label: "Есть изменения", cls: "info", icon: I.cloud },
-  conflict: { label: "Конфликт", cls: "bad", icon: I.conflict },
-  never: { label: "Не синхронизировано", cls: "warn", icon: I.cloud },
-  unavailable: { label: "Без облака", cls: "", icon: I.cloudOff },
-  unknown: { label: "Облако —", cls: "", icon: I.cloud },
+  synced: { label: "синхронизировано", dot: "ok" },
+  pending: { label: "есть изменения", dot: "warn" },
+  conflict: { label: "конфликт", dot: "warn" },
+  never: { label: "не синхронизировано", dot: "warn" },
+  unavailable: { label: "без облака", dot: "" },
+  unknown: { label: "нет данных", dot: "" },
 };
 
 const BRIDGE = {
-  ready: { label: "Мост готов", cls: "ok" },
-  notBuilt: { label: "Мост не собран", cls: "warn" },
-  notNeeded: { label: "Без Steamworks", cls: "" },
-  unknown: { label: "Мост —", cls: "" },
+  ready: { label: "мост готов", tag: "МОСТ ГОТОВ", dot: "ok" },
+  notBuilt: { label: "мост не собран", tag: "МОСТ НЕ СОБРАН", dot: "warn" },
+  notNeeded: { label: "без Steamworks", tag: null, dot: "" },
+  unknown: { label: "нет данных", tag: null, dot: "" },
 };
 
 const rtf = new Intl.RelativeTimeFormat("ru", { numeric: "auto" });
@@ -100,9 +73,11 @@ function ago(ts) {
 
 function size(b) {
   if (!b) return null;
-  if (b >= 1e9) return `${(b / 1e9).toFixed(b >= 1e10 ? 0 : 1)} ГБ`;
-  return `${Math.max(1, Math.round(b / 1e6))} МБ`;
+  if (b >= 1e9) return `${(b / 1e9).toFixed(b >= 1e10 ? 0 : 1)} GB`;
+  return `${Math.max(1, Math.round(b / 1e6))} MB`;
 }
+
+const dot = (cls) => `<span class="dot ${cls || ""}" aria-hidden="true"></span>`;
 
 /* ---------- уведомления ---------- */
 
@@ -113,7 +88,7 @@ function toast(msg, kind = "bad") {
   $("#toasts").append(el);
   setTimeout(() => {
     el.classList.add("out");
-    setTimeout(() => el.remove(), 300);
+    setTimeout(() => el.remove(), 500);
   }, 4200);
 }
 
@@ -130,7 +105,7 @@ async function loadGames() {
   }
   if (S.view === "library") renderLibraryBody();
   // Карточку не пересобираем целиком: лог и прокрутка остаются на месте.
-  if (S.view === "game") $("#chips") ? (renderGameChips(), renderPlay()) : renderGame();
+  if (S.view === "game") $("#actions") ? refreshGame() : renderGame();
 }
 
 async function loadEnv() {
@@ -140,10 +115,15 @@ async function loadEnv() {
     toast(e);
     return;
   }
-  $("#env-dot").hidden = S.env.ready;
+  const bad = S.env.env.checks.filter((c) => !c.ok).length;
+  const cnt = $("#env-count");
+  cnt.hidden = !bad;
+  cnt.textContent = bad;
+  $('[data-view="setup"]').setAttribute("aria-label", bad ? `Окружение, проблем: ${bad}` : "Окружение");
   if (S.view === "setup") renderSetup();
-  if (S.view === "library") renderBanner();
+  if (S.view === "library") renderNotice();
   if (S.view === "settings") renderSettings();
+  if (S.view === "game") refreshGame();
 }
 
 async function loadCloud(appid) {
@@ -154,12 +134,22 @@ async function loadCloud(appid) {
   } catch (e) {
     S.cloud[appid] = { loading: false, error: String(e) };
   }
-  if (S.view === "game" && S.appid === appid) renderCloud();
+  if (S.view === "game" && S.appid === appid) {
+    renderCloud();
+    renderLabel();
+  }
 }
 
 const game = (appid) => (S.games || []).find((g) => g.appid === appid);
 const task = (name) => S.tasks[name];
 const running = (name) => !!task(name)?.running;
+
+// Движок из профиля; без выбора — первый найденный.
+function engine() {
+  const list = S.env?.env.engines || [];
+  const id = S.settings?.profile.engine;
+  return list.find((e) => e.id === id) || list[0] || null;
+}
 
 /* ---------- задачи ---------- */
 
@@ -210,7 +200,7 @@ function appendLog(appid, line) {
   if (log.length > 2000) log.splice(0, log.length - 2000);
   if (S.view === "game" && S.appid === appid) {
     const el = $("#log");
-    if (!el) return;
+    if (!el) return renderLog();
     const stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
     el.insertAdjacentHTML("beforeend", logLine(line));
     if (stick) el.scrollTop = el.scrollHeight;
@@ -251,9 +241,9 @@ function refreshTaskViews(name, kind) {
   if (kind === "log") return;
   const [type, id] = name.split(":");
   if (S.view === "game" && S.appid === Number(id)) {
-    renderPlay();
-    renderStages();
-    renderGameChips();
+    renderActions();
+    if (type === "bridge") renderLabel();
+    if (type === "launch" && !$("#log")) renderLog();
   }
   if (S.view === "library" && type === "launch") renderLibraryBody();
   if (S.view === "setup" && type === "fix") renderSetup();
@@ -262,14 +252,19 @@ function refreshTaskViews(name, kind) {
 /* ---------- навигация ---------- */
 
 function go(view, appid = null) {
+  if (typeof closeMenu === "function") closeMenu();
   S.view = view;
   S.appid = appid;
-  document.querySelectorAll(".nav-item").forEach((b) => b.classList.toggle("active", b.dataset.view === view || (view === "game" && b.dataset.view === "library")));
+  document.querySelectorAll(".tab[data-view]").forEach((b) => {
+    const on = b.dataset.view === view || (view === "game" && b.dataset.view === "library");
+    if (on) b.setAttribute("aria-current", "page");
+    else b.removeAttribute("aria-current");
+  });
   main.scrollTop = 0;
   if (view === "library") renderLibrary();
   if (view === "game") {
     renderGame();
-    if (!S.cloud[appid]) loadCloud(appid);
+    if (!S.cloud[appid] && game(appid)?.installed) loadCloud(appid);
   }
   if (view === "setup") {
     renderSetup();
@@ -282,15 +277,59 @@ function go(view, appid = null) {
   }
 }
 
-document.querySelectorAll(".nav-item").forEach((b) => b.addEventListener("click", () => go(b.dataset.view)));
+document.querySelectorAll(".tab[data-view]").forEach((b) => b.addEventListener("click", () => go(b.dataset.view)));
+
+/* ---------- поиск в панели ---------- */
+
+const q = $("#q");
+const searchBtn = $("#search-btn");
+searchBtn.innerHTML = I.search;
+
+function openSearch() {
+  q.hidden = false;
+  searchBtn.hidden = true;
+  q.focus();
+}
+
+function closeSearch() {
+  q.value = "";
+  q.hidden = true;
+  searchBtn.hidden = false;
+  if (S.q) {
+    S.q = "";
+    if (S.view === "library") renderLibraryBody();
+  }
+}
+
+searchBtn.addEventListener("click", openSearch);
+q.addEventListener("input", () => {
+  S.q = q.value;
+  if (S.view !== "library") go("library");
+  else renderLibraryBody();
+});
+q.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    closeSearch();
+    searchBtn.focus();
+  }
+});
+q.addEventListener("blur", () => {
+  if (!q.value) closeSearch();
+});
+document.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === "f") {
+    e.preventDefault();
+    openSearch();
+  }
+});
 
 /* ---------- обложки ---------- */
 
-function cover(g, cls = "") {
-  return `<img class="${cls}" src="${esc(g.cover.portrait)}" alt="" loading="lazy" data-fallback="${esc(g.cover.header)}" data-name="${esc(g.name)}">`;
+function cover(g, src = g.cover.portrait) {
+  return `<img src="${esc(src)}" alt="" loading="lazy" data-fallback="${esc(g.cover.header)}" data-name="${esc(g.name)}">`;
 }
 
-// Нет вертикальной обложки — горизонтальная, нет и её — плашка с названием.
+// Нет вертикальной обложки — горизонтальная, нет и её — плоская плашка с названием.
 document.addEventListener(
   "error",
   (e) => {
@@ -302,7 +341,8 @@ document.addEventListener(
     } else if (img.dataset.name !== undefined && !img.dataset.dead) {
       img.dataset.dead = "1";
       img.style.opacity = "0";
-      img.insertAdjacentHTML("afterend", `<div class="cover-fallback">${esc(img.dataset.name)}</div>`);
+      const cls = img.classList.contains("art") ? "art-name" : "cover-fallback";
+      img.insertAdjacentHTML("afterend", `<div class="${cls}" aria-hidden="true">${esc(img.dataset.name)}</div>`);
     } else {
       img.style.opacity = "0";
     }
@@ -314,53 +354,27 @@ document.addEventListener(
 
 function renderLibrary() {
   main.innerHTML = `
-    <section class="view">
-      <div id="banner"></div>
-      <div id="hero"></div>
-      <div class="head">
-        <h1>Библиотека</h1>
-        <span class="grow"></span>
-        <span id="steam-head"></span>
-        <div class="seg" id="seg">
-          <button data-f="all">Все</button>
-          <button data-f="installed">Установлены</button>
-        </div>
-        <label class="search">${I.search}<input id="q" placeholder="Поиск" value="${esc(S.q)}" spellcheck="false"></label>
-      </div>
-      <div class="grid" id="grid"></div>
-    </section>`;
-  $("#q").addEventListener("input", (e) => {
-    S.q = e.target.value;
-    renderGrid();
-  });
-  $("#seg").addEventListener("click", (e) => {
-    if (!e.target.dataset.f) return;
-    S.filter = e.target.dataset.f;
-    renderGrid();
-  });
-  renderBanner();
-  renderSteamHead();
+    <div class="view">
+      <div id="notice" hidden></div>
+      <div id="lib-body" class="section" style="gap:48px"></div>
+    </div>`;
+  renderNotice();
   renderLibraryBody();
 }
 
-function renderBanner() {
-  const el = $("#banner");
+function renderNotice() {
+  const el = $("#notice");
   if (!el) return;
   const bad = S.env?.env.checks.find((c) => !c.ok);
+  el.hidden = !bad;
   if (!bad) return void (el.innerHTML = "");
-  const fixing = S.fixing;
-  el.innerHTML = `<div class="banner">${I.alert}<span class="grow">${esc(CHECKS[bad.id].missing)}</span>
-    <button class="btn btn-sm" id="banner-fix" ${fixing ? "disabled" : ""}>${bad.id === "steam" && bad.fixable ? "Открыть" : "Починить"}</button></div>`;
-  $("#banner-fix").onclick = () => {
-    if (bad.id === "steam" && bad.fixable) {
-      start("fix", { check: "steam" }, "fix:steam").then(() => setTimeout(loadEnv, 1500));
-    } else go("setup");
+  const open = bad.id === "steam" && bad.fixable;
+  el.innerHTML = `<div class="notice rise">${I.alert}<span class="grow">${esc(CHECKS[bad.id].missing)}</span>
+    <button class="btn btn-sm" id="notice-fix" ${S.fixing ? "disabled" : ""}>${open ? "Открыть Steam" : "Починить"}</button></div>`;
+  $("#notice-fix").onclick = () => {
+    if (open) start("fix", { check: "steam" }, "fix:steam").then(() => setTimeout(loadEnv, 1500));
+    else go("setup");
   };
-}
-
-function renderLibraryBody() {
-  renderHero();
-  renderGrid();
 }
 
 function pickHero() {
@@ -368,80 +382,129 @@ function pickHero() {
   return gs.find((g) => running(`launch:${g.appid}`)) || [...gs].sort((a, b) => (b.cloud.lastSync || 0) - (a.cloud.lastSync || 0))[0];
 }
 
-function playButton(g) {
-  const t = task(`launch:${g.appid}`);
-  const cls = "play";
-  if (!g.installed) return g.windows === false ? `<button class="${cls}" disabled style="opacity:.5">Нет Windows-сборки</button>` : installButton(g);
-  if (g.available === false) return `<button class="${cls}" disabled style="opacity:.5">${I.disk}Диск отключён</button>`;
-  if (t?.running) {
-    if (t.stages.game?.status === "active") return `<button class="${cls} running" disabled>${I.game}Играет</button>`;
-    const st = STAGES.find((s) => t.stages[s.id]?.status === "active");
-    return `<button class="${cls} busy" disabled><span class="spin"></span>${esc(st ? st.name : "Запуск")}</button>`;
-  }
-  return `<button class="${cls}" data-play="${g.appid}">${I.play}Играть</button>`;
+// Слово рядом с точкой: статус не только цветом.
+function gameStatus(g) {
+  if (running(`launch:${g.appid}`)) return ["ok", "ИДЁТ"];
+  if (g.available === false) return ["", "ДИСК ОТКЛЮЧЁН"];
+  if (running(`move:${g.appid}`)) return ["warn", "ПЕРЕНОС"];
+  if (g.cloud.state === "conflict") return ["warn", "КОНФЛИКТ ОБЛАКА"];
+  if (g.bridge === "notBuilt") return ["warn", "МОСТ НЕ СОБРАН"];
+  if (g.bridge === "ready") return ["ok", "МОСТ ГОТОВ"];
+  return ["ok", "ГОТОВА"];
 }
 
-function renderHero() {
-  const el = $("#hero");
+function renderLibraryBody() {
+  const el = $("#lib-body");
   if (!el) return;
   if (!S.games) {
-    el.innerHTML = `<div class="hero skeleton"></div>`;
-    return;
-  }
-  const g = pickHero();
-  if (!g) return void (el.innerHTML = "");
-  const c = CLOUD[g.cloud.state];
-  el.innerHTML = `
-    <div class="hero">
-      <img class="hero-img" src="${esc(g.cover.hero)}" alt="" data-fallback="${esc(g.cover.header)}">
-      <div class="hero-body">
-        <span class="eyebrow">${running(`launch:${g.appid}`) ? "Сейчас" : "Продолжить"}</span>
-        <div class="hero-title">${esc(g.name)}</div>
-        <div class="row">
-          ${playButton(g)}
-          <button class="btn btn-ghost" data-open="${g.appid}">Подробнее</button>
-        </div>
-        <div class="row">
-          <span class="chip ${c.cls}">${c.icon}${g.cloud.lastSync ? esc(ago(g.cloud.lastSync)) : esc(c.label)}</span>
-          <span class="chip ${BRIDGE[g.bridge].cls}">${I.trophy}${esc(BRIDGE[g.bridge].label)}</span>
-        </div>
-      </div>
-    </div>`;
-}
-
-function renderGrid() {
-  const el = $("#grid");
-  if (!el) return;
-  document.querySelectorAll("#seg button").forEach((b) => b.classList.toggle("on", b.dataset.f === S.filter));
-  if (!S.games) {
-    el.innerHTML = Array.from({ length: 8 }, () => `<div class="card skeleton"></div>`).join("");
+    el.innerHTML = `<div class="hero skel"></div>
+      <section class="section"><div class="skel-line" style="width:160px;height:32px"></div>${skelGrid(6)}</section>`;
     return;
   }
   const q = S.q.trim().toLowerCase();
-  const list = S.games.filter((g) => (S.filter === "all" || g.installed) && (!q || g.name.toLowerCase().includes(q)));
-  if (!list.length) {
-    el.innerHTML = `<div class="empty" style="grid-column:1/-1">${S.games.length ? "Ничего не нашлось" : "Пока пусто"}</div>`;
+  const match = (g) => !q || g.name.toLowerCase().includes(q);
+  const installed = S.games.filter((g) => g.installed && match(g));
+  const owned = S.games.filter((g) => !g.installed && match(g));
+  if (q && !installed.length && !owned.length) {
+    el.innerHTML = `<div class="empty rise">${I.search}<h3>Ничего не нашлось</h3>
+      <button class="btn btn-sm" id="clear-q">Сбросить поиск</button></div>`;
+    $("#clear-q").onclick = closeSearch;
     return;
   }
-  el.innerHTML = list
-    .map((g, i) => {
-      const c = CLOUD[g.cloud.state];
-      const b = BRIDGE[g.bridge];
-      const live = running(`launch:${g.appid}`);
-      const badges = g.installed
-        ? `${g.bridge === "ready" || g.bridge === "notBuilt" ? `<span class="badge ${b.cls}" title="${esc(b.label)}">${I.trophy}</span>` : ""}
-           ${g.cloud.state !== "unknown" ? `<span class="badge ${c.cls}" title="${esc(c.label)}">${c.icon}</span>` : ""}`
-        : "";
-      return `
-      <button class="card ${g.installed && g.available !== false ? "" : "off"}" data-open="${g.appid}" style="animation-delay:${Math.min(i, 16) * 25}ms">
-        ${cover(g)}
-        ${live ? `<span class="chip ok live">${I.game}Играет</span>` : ""}
-        <span class="badges">${badges}</span>
-        ${g.installed && g.available !== false && !live ? `<span class="card-play" data-play="${g.appid}" title="Играть">${I.play}</span>` : ""}
-        <span class="card-foot"><span class="card-name">${esc(g.name)}</span>${g.installed ? (g.available === false ? `<span class="chip warn">диск отключён</span>` : "") : `<span class="chip chip-quiet">не установлена</span>`}</span>
-      </button>`;
-    })
-    .join("");
+  const hero = q ? null : pickHero();
+  el.innerHTML = `
+    ${hero ? heroHtml(hero) : ""}
+    <section class="section" aria-labelledby="h-installed">
+      <div class="section-head"><h2 id="h-installed">Установлено</h2><span class="caption">${installed.length}</span></div>
+      ${
+        installed.length
+          ? `<div class="grid">${installed.map(installedCard).join("")}</div>`
+          : `<div class="empty">${I.game}<h3>Пока ничего не установлено</h3></div>`
+      }
+    </section>
+    ${ownedSection(owned, q)}`;
+}
+
+function heroHtml(g) {
+  const live = running(`launch:${g.appid}`);
+  const e = engine();
+  const tags = [
+    e?.d3dmetal ? "D3DMETAL" : null,
+    BRIDGE[g.bridge].tag,
+    g.cloud.lastSync ? `ОБЛАКО · ${ago(g.cloud.lastSync)}` : null,
+    size(g.sizeBytes),
+  ].filter(Boolean);
+  return `
+    <section class="hero rise" aria-label="${live ? "Сейчас играет" : "Продолжить"}">
+      <img class="art" src="${esc(g.cover.hero)}" alt="" data-fallback="${esc(g.cover.header)}" data-name="${esc(g.name)}">
+      <div class="scrim"></div>
+      <div class="hero-body">
+        <span class="eyebrow">${live ? "СЕЙЧАС ИГРАЕТ" : "ПРОДОЛЖИТЬ"}</span>
+        <h1 class="hero-title display">${esc(g.name)}</h1>
+        ${tags.length ? `<div class="tags">${tags.map((t) => `<span class="tag">${esc(t)}</span>`).join("")}</div>` : ""}
+        <div class="actions">
+          ${live ? `<button class="btn btn-ghost" data-open="${g.appid}">${I.game}Идёт</button>` : `<button class="btn btn-primary" data-play="${g.appid}">${I.play}Играть</button>`}
+          <button class="btn btn-ghost" data-open="${g.appid}">Об игре</button>
+        </div>
+      </div>
+    </section>`;
+}
+
+function installedCard(g, i) {
+  const [cls, word] = gameStatus(g);
+  const can = g.available !== false && !running(`launch:${g.appid}`);
+  return `
+    <div class="card-wrap rise" style="animation-delay:${Math.min(i, 12) * 30}ms">
+      <button class="card" data-open="${g.appid}" aria-label="${esc(g.name)}">
+        <span class="cover">${cover(g)}</span>
+        <span class="card-meta">
+          <span class="card-name">${esc(g.name)}</span>
+          <span class="status">${dot(cls)}<span>${word}</span></span>
+        </span>
+      </button>
+      ${can ? `<button class="cover-play" data-play="${g.appid}" aria-label="Играть: ${esc(g.name)}">${I.play}</button>` : ""}
+    </div>`;
+}
+
+function ownedSection(list, q) {
+  const head = `<div class="section-head"><h2 id="h-owned">В библиотеке Steam</h2><span class="caption">не установлены</span></div>`;
+  if (S.account === null && !list.length) {
+    if (q) return "";
+    return `<section class="section" aria-labelledby="h-owned">${head}
+      <div class="empty">${I.steam}<h3>Вся библиотека Steam</h3>
+        <button class="btn btn-primary" data-login>${I.steam}Войти через Steam</button></div></section>`;
+  }
+  if (S.ownedLoading && !list.length) return `<section class="section" aria-labelledby="h-owned">${head}${skelGrid(6)}</section>`;
+  if (!list.length) return "";
+  return `<section class="section" aria-labelledby="h-owned">${head}
+    <div class="grid">${list.map(ownedCard).join("")}</div></section>`;
+}
+
+function ownedCard(g, i) {
+  const d = queued(g.appid);
+  const pct = d && d.totalBytes ? Math.floor((d.doneBytes / d.totalBytes) * 100) : 0;
+  const badge = d
+    ? d.state === "active"
+      ? `${pct}%`
+      : { queued: "В ОЧЕРЕДИ", paused: "ПАУЗА", failed: "ОШИБКА" }[d.state]
+    : g.windows === false
+      ? "НЕТ WINDOWS"
+      : null;
+  return `
+    <button class="card owned rise ${g.windows === false ? "faded" : ""}" data-open="${g.appid}" style="animation-delay:${Math.min(i, 12) * 30}ms">
+      <span class="cover">${cover(g)}${badge ? `<span class="tag" data-dl-tag="${g.appid}">${badge}</span>` : ""}</span>
+      <span class="card-meta">
+        <span class="card-row"><span class="card-name">${esc(g.name)}</span><span class="card-size">${esc(size(g.sizeBytes) || "")}</span></span>
+        ${d ? `<span class="bar" data-dl-bar="${g.appid}" role="progressbar" aria-label="Загрузка" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><i style="transform:scaleX(${pct / 100})"></i></span>` : ""}
+      </span>
+    </button>`;
+}
+
+function skelGrid(n) {
+  return `<div class="grid" aria-hidden="true">${Array.from(
+    { length: n },
+    () => `<div class="card"><div class="cover skel"></div><div class="skel-line" style="width:70%"></div></div>`,
+  ).join("")}</div>`;
 }
 
 main.addEventListener("click", (e) => {
@@ -453,6 +516,7 @@ main.addEventListener("click", (e) => {
     if (S.view === "library") go("game", appid);
     return;
   }
+  if (e.target.closest("[data-login]")) return void steamLogin();
   const o = e.target.closest("[data-open]");
   if (o) go("game", Number(o.dataset.open));
 });
@@ -462,83 +526,178 @@ main.addEventListener("click", (e) => {
 function renderGame() {
   const g = game(S.appid);
   if (!g) {
-    main.innerHTML = `<section class="view"><div class="empty">${S.games ? "Игра не найдена" : ""}</div></section>`;
+    main.innerHTML = S.games
+      ? `<div class="view"><div class="empty">${I.game}<h3>Игра не найдена</h3><button class="btn btn-sm" data-go-lib>В библиотеку</button></div></div>`
+      : `<div class="game-hero skel"></div>`;
+    const b = main.querySelector("[data-go-lib]");
+    if (b) b.onclick = () => go("library");
     return;
   }
   main.innerHTML = `
-    <section class="game view" style="padding-top:0">
+    <header class="game-hero">
+      <img class="art" src="${esc(g.cover.hero)}" alt="" data-fallback="${esc(g.cover.header)}" data-name="${esc(g.name)}">
+      <div class="scrim"></div>
       <button class="btn btn-sm back" id="back">${I.back}Библиотека</button>
-      <div class="game-hero">
-        <img class="hero-img" src="${esc(g.cover.hero)}" alt="" data-fallback="${esc(g.cover.header)}">
-        <div class="game-head">
-          ${cover(g, "game-cover")}
-          <div class="grow" style="min-width:240px">
-            <div class="game-title">${esc(g.name)}</div>
-            <div class="row" id="chips"></div>
-          </div>
-          <div id="play"></div>
-        </div>
+      <div class="game-head">
+        <h1 class="game-title display">${esc(g.name)}</h1>
+        <div class="actions" id="actions"></div>
+        <div id="launch-err"></div>
       </div>
-      <div class="game-body">
-        <div class="panel">
-          <div class="panel-head"><h2>Запуск</h2></div>
-          <div class="stages" id="stages"></div>
-          <div class="log" id="log"></div>
-        </div>
-        <div class="panel">
-          <div class="panel-head"><h2>Steam Cloud</h2><span class="grow"></span>
-            <button class="btn btn-sm btn-ghost" id="cloud-refresh" title="Обновить">${I.refresh}</button></div>
-          <div id="cloud"></div>
-        </div>
-      </div>
-    </section>`;
+    </header>
+    <div class="game-body">
+      <section class="panel wide rise" aria-labelledby="h-label">
+        <div class="panel-head"><h2 id="h-label">Этикетка</h2><span class="caption">APPID ${g.appid}</span></div>
+        <dl class="label" id="label"></dl>
+      </section>
+      <section class="panel rise" aria-labelledby="h-profile" id="profile"></section>
+      ${
+        g.installed
+          ? `<section class="panel wide rise" aria-labelledby="h-cloud">
+              <div class="panel-head"><h2 id="h-cloud">Steam Cloud</h2>
+                <button class="icon-btn" id="cloud-refresh" aria-label="Обновить статус облака">${I.refresh}</button></div>
+              <div id="cloud" class="section" style="gap:16px"></div>
+            </section>`
+          : ""
+      }
+      <div id="log-slot" class="panel full" hidden></div>
+    </div>`;
   $("#back").onclick = () => go("library");
-  $("#cloud-refresh").onclick = () => loadCloud(g.appid);
-  const log = S.logs[g.appid] || [];
-  $("#log").innerHTML = log.length ? log.map(logLine).join("") : "";
-  $("#log").scrollTop = 1e9;
-  renderGameChips();
-  renderPlay();
-  renderStages();
+  const r = $("#cloud-refresh");
+  if (r) r.onclick = () => loadCloud(g.appid);
+  refreshGame();
+  renderProfile();
   renderCloud();
+  renderLog();
 }
 
-function renderGameChips() {
-  const el = $("#chips");
+// Всё, что зависит от игры и задач, без пересборки лога и облака.
+function refreshGame() {
+  if (S.view !== "game" || !$("#actions")) return;
+  renderActions();
+  renderLabel();
+}
+
+function renderActions() {
+  const el = $("#actions");
   const g = game(S.appid);
   if (!el || !g) return;
-  const b = BRIDGE[g.bridge];
+  const t = task(`launch:${g.appid}`);
+  let main_;
+  if (!g.installed) {
+    main_ = g.windows === false ? `<button class="btn btn-primary launch" disabled>Нет Windows-сборки</button>` : installButton(g);
+  } else if (g.available === false) {
+    main_ = `<button class="btn btn-primary launch" disabled>${I.disk}Диск отключён</button>`;
+  } else if (t?.running) {
+    // Полоска уже на месте — только обновить, иначе каждое событие перезапускает её появление.
+    const cur = el.querySelector(".stages-btn");
+    if (cur) return void updateStages(cur, t);
+    main_ = stagesBlock(t);
+  } else {
+    main_ = `<button class="btn btn-primary launch" data-play="${g.appid}">${I.play}Играть</button>`;
+  }
   const building = running(`bridge:${g.appid}`);
-  const c = CLOUD[S.cloud[g.appid]?.data?.summary || g.cloud.state];
-  const sz = size(g.sizeBytes);
-  el.innerHTML = `
-    <span class="chip ${b.cls}">${building ? '<span class="spin" style="width:12px;height:12px"></span>' : I.trophy}${building ? "Собираю мост" : esc(b.label)}</span>
-    ${g.bridge === "notBuilt" && !building && g.installed ? `<button class="btn btn-sm" id="build">Собрать</button>` : ""}
-    <span class="chip ${c.cls}">${c.icon}${esc(c.label)}</span>
-    ${sz ? `<span class="chip chip-quiet">${sz}</span>` : ""}
-    ${libraryChips(g)}`;
-  wireLibraryChips(g);
-  const btn = $("#build");
-  if (btn) btn.onclick = () => buildBridge(g.appid);
+  const bridge =
+    g.installed && g.bridge === "notBuilt"
+      ? `<button class="btn btn-ghost" id="build" ${building ? "disabled" : ""}>${I.bridge}${building ? "Собираю мост" : "Собрать мост"}</button>`
+      : "";
+  el.innerHTML = main_ + bridge + libraryActions(g);
+  wireLibraryActions(g);
+  const b = $("#build");
+  if (b) b.onclick = () => buildBridge(g.appid);
+  const err = $("#launch-err");
+  if (err) {
+    const fail = t && !t.running && t.ok === false && t.error;
+    err.innerHTML = fail ? `<div class="notice" style="max-width:560px">${I.alert}<span class="grow">${esc(t.error)}</span></div>` : "";
+  }
 }
 
-function renderPlay() {
-  const el = $("#play");
+// «Играть» превращается в полоску этапов: каждый заполняется по порядку.
+function stagesState(t) {
+  const st = (s) => t.stages[s.id]?.status;
+  const failed = STAGES.find((s) => st(s) === "failed");
+  let cur = STAGES.findIndex((s) => st(s) === "active");
+  if (cur < 0) cur = STAGES.reduce((n, s, i) => (st(s) ? i : n), -1);
+  const label = failed ? `${failed.short}: ${t.stages[failed.id].message || "ошибка"}` : cur >= 0 ? STAGES[cur].name : "Запуск";
+  return { label, num: Math.max(1, cur + 1), cls: STAGES.map((s) => `seg ${st(s) || ""}`) };
+}
+
+function stagesBlock(t) {
+  const { label, num, cls } = stagesState(t);
+  return `<div class="stages-btn" role="status" aria-live="polite">
+    <span class="stages-top"><span class="stage-label">${esc(label)}</span><span class="mono stage-num" aria-label="этап ${num} из 4">${num}/4</span></span>
+    <span class="segs" aria-hidden="true">${cls.map((c) => `<span class="${c}"><i></i></span>`).join("")}</span></div>`;
+}
+
+function updateStages(el, t) {
+  const { label, num, cls } = stagesState(t);
+  const l = el.querySelector(".stage-label");
+  if (l.textContent !== label) l.textContent = label;
+  const n = el.querySelector(".stage-num");
+  n.textContent = `${num}/4`;
+  n.setAttribute("aria-label", `этап ${num} из 4`);
+  // Класс меняем только при смене этапа: анимация набора не начинается заново.
+  el.querySelectorAll(".seg").forEach((s, i) => s.className !== cls[i] && (s.className = cls[i]));
+}
+
+function renderLabel() {
+  const el = $("#label");
   const g = game(S.appid);
-  if (el && g) el.innerHTML = playButton(g);
+  if (!el || !g) return;
+  const e = engine();
+  const p = S.settings?.profile;
+  const rows = [];
+  if (g.installed) {
+    const checks = S.env?.env.checks || [];
+    const okCheck = (id) => checks.find((c) => c.id === id)?.ok;
+    const c = CLOUD[S.cloud[g.appid]?.data?.summary || g.cloud.state];
+    const last = S.cloud[g.appid]?.data?.status.lastSync ?? g.cloud.lastSync;
+    const building = running(`bridge:${g.appid}`);
+    rows.push(
+      ["Движок", e ? e.name : S.env ? "не установлен" : "…", e ? "ok" : "warn"],
+      ["Графика", e ? (e.d3dmetal ? "D3DMetal" : "без D3DMetal") : "…", e?.d3dmetal && okCheck("d3dMetal") !== false ? "ok" : "warn"],
+      ["Steam", building ? "собираю мост" : BRIDGE[g.bridge].label, building ? "warn" : BRIDGE[g.bridge].dot],
+      ["Облако", `${c.label}${last ? ` · ${ago(last)}` : ""}`, c.dot],
+      ["Папка", g.library ? `${libName(g.library)}${g.available === false ? " · отключена" : ""}` : "—", g.available === false ? "warn" : ""],
+      ["Бутылка", p ? p.bottle : "…", ""],
+    );
+  } else {
+    rows.push(["Windows", g.windows === false ? "нет сборки" : "есть", g.windows === false ? "warn" : "ok"], ["Папка", "не установлена", ""]);
+  }
+  if (g.sizeBytes) rows.push(["Размер", size(g.sizeBytes), ""]);
+  el.innerHTML = rows.map(([k, v, d]) => `<dt>${k}</dt><dd>${dot(d)}${esc(v)}</dd>`).join("");
 }
 
-function renderStages() {
-  const el = $("#stages");
+const PROFILE = [
+  ["bridge", "Мост в Steam"],
+  ["cloud", "Steam Cloud"],
+  ["hud", "Счётчик FPS"],
+];
+
+function switchHtml(key, label, on) {
+  return `<button class="switch" role="switch" aria-checked="${on ? "true" : "false"}" aria-label="${esc(label)}" data-switch="${key}"><i></i></button>`;
+}
+
+function renderProfile() {
+  const el = $("#profile");
   if (!el) return;
-  const t = task(`launch:${S.appid}`);
-  el.innerHTML = STAGES.map((s) => {
-    const st = t?.stages[s.id];
-    const cls = st ? st.status : "";
-    const ico = st?.status === "done" ? I.check : st?.status === "failed" ? I.x : s.icon;
-    return `<div class="stage ${cls}"><span class="stage-ico">${ico}</span><span class="stage-name">${s.name}</span>
-      ${st?.status === "failed" ? `<span class="stage-msg">${esc(st.message)}</span>` : ""}</div>`;
-  }).join("");
+  const p = S.settings?.profile;
+  el.innerHTML = `
+    <div class="panel-head"><h2 id="h-profile">Профиль</h2><span class="caption">ДЛЯ ВСЕХ ИГР</span></div>
+    <div class="tray">
+      ${PROFILE.map(([k, name]) => `<label class="toggle"><span>${name}</span>${switchHtml(k, name, p?.[k])}</label>`).join("")}
+    </div>`;
+  wireSwitches(el);
+}
+
+function wireSwitches(root) {
+  root.querySelectorAll("[data-switch]").forEach((b) => {
+    b.onclick = (e) => {
+      e.preventDefault();
+      const on = b.getAttribute("aria-checked") !== "true";
+      b.setAttribute("aria-checked", on);
+      saveSettings((s) => (s.profile[b.dataset.switch] = on));
+    };
+  });
 }
 
 function renderCloud() {
@@ -547,33 +706,50 @@ function renderCloud() {
   if (!el || !g) return;
   const c = S.cloud[g.appid] || {};
   const last = c.data?.status.lastSync ?? g.cloud.lastSync;
-  const meta = `<dl class="meta"><dt>Синхронизация</dt><dd>${esc(ago(last))}</dd></dl>`;
-  $("#cloud-refresh").innerHTML = c.loading ? '<span class="spin"></span>' : I.refresh;
+  const btn = $("#cloud-refresh");
+  if (btn) btn.disabled = !!c.loading;
+  const meta = `<span class="caption">СИНХРОНИЗАЦИЯ · ${esc(ago(last))}</span>`;
   if (c.error) {
-    el.innerHTML = `${meta}<div class="banner" style="margin:0">${I.alert}<span>${esc(c.error)}</span></div>`;
+    el.innerHTML = `${meta}<div class="notice">${I.alert}<span class="grow">${esc(c.error)}</span>
+      <button class="btn btn-sm" id="cloud-retry">Повторить</button></div>`;
+    $("#cloud-retry").onclick = () => loadCloud(g.appid);
     return;
   }
   if (!c.data) {
-    el.innerHTML = `${meta}<ul class="files">${[1, 2, 3].map(() => '<li class="file skeleton" style="height:38px"></li>').join("")}</ul>`;
+    el.innerHTML = `${meta}<ul class="files" aria-hidden="true">${[1, 2, 3].map(() => '<li class="file skel"></li>').join("")}</ul>`;
     return;
   }
   const files = c.data.status.files;
   if (!files.length) {
-    el.innerHTML = `${meta}<div class="empty">${esc(c.data.status.note || "Файлов нет")}</div>`;
+    el.innerHTML = `${meta}<div class="row"><span class="row-label" style="color:var(--text-2)">${esc(c.data.status.note || "Файлов нет")}</span></div>`;
     return;
   }
-  const ico = { synced: I.check, download: I.down, upload: I.up };
+  const ico = { synced: I.check, download: I.cloudDown, upload: I.cloudUp };
+  const word = { synced: "=", download: "↓", upload: "↑" };
   const tip = { synced: "Синхронизирован", download: "Скачается", upload: "Выгрузится" };
   el.innerHTML =
     meta +
     `<ul class="files">${files
       .map(
-        (f, i) => `<li class="file" style="animation-delay:${i * 30}ms" title="${tip[f.action]}${f.conflict ? " · конфликт, старая версия уйдёт в backups" : ""}">
-        <span class="file-ico ${f.action}">${ico[f.action]}</span>
-        <span class="file-name">${esc(f.name)}</span>
-        ${f.conflict ? `<span class="chip bad">${I.conflict}конфликт</span>` : ""}</li>`,
+        (f) => `<li class="file ${f.action}" title="${tip[f.action]}">${ico[f.action]}
+          <span class="sr">${tip[f.action]}</span>
+          <span class="file-name">${esc(f.name)}</span>
+          ${f.conflict ? `<span class="tag plain">КОНФЛИКТ</span>` : `<span class="caption" aria-hidden="true">${word[f.action]}</span>`}</li>`,
       )
       .join("")}</ul>`;
+}
+
+function renderLog() {
+  const slot = $("#log-slot");
+  if (!slot) return;
+  const log = S.logs[S.appid] || [];
+  if (!log.length && !running(`launch:${S.appid}`)) {
+    slot.hidden = true;
+    return;
+  }
+  slot.hidden = false;
+  slot.innerHTML = `<div class="panel-head"><h2>Лог запуска</h2></div><div class="log" id="log" tabindex="0" aria-label="Лог запуска">${log.map(logLine).join("")}</div>`;
+  $("#log").scrollTop = 1e9;
 }
 
 /* ---------- окружение ---------- */
@@ -583,52 +759,66 @@ function renderSetup() {
   const env = S.env?.env;
   const checks = env?.checks || [];
   const ok = checks.filter((c) => c.ok).length;
-  const pct = checks.length ? Math.round((ok / checks.length) * 100) : 0;
   const fixable = checks.some((c) => !c.ok && c.fixable);
   const ready = S.env?.ready;
   const working = (id) => running(`fix:${id}`) || (id === "d3dMetal" && running("fix:engine"));
-  const title = !S.env ? "Проверяю…" : ready ? "Всё готово" : `Осталось ${checks.length - ok}`;
+  const title = !S.env ? "Проверяю" : ready ? "Всё готово" : `Осталось ${checks.length - ok}`;
+  const segs = checks.map((c) => `<span class="seg ${c.ok ? "done" : working(c.id) ? "active" : ""}"><i></i></span>`).join("");
   main.innerHTML = `
-    <section class="view setup">
-      <div class="setup-hero">
-        <div class="ring" style="--p:${pct}" data-label="${ok}/${checks.length || "–"}"></div>
-        <div class="grow"><h1>${title}</h1></div>
-        ${ready ? `<button class="play" data-go="library">${I.play}В библиотеку</button>` : ""}
+    <div class="view setup">
+      <div class="setup-head">
+        <div class="grow">
+          <span class="caption">ОКРУЖЕНИЕ · ${ok}/${checks.length || "–"}</span>
+          <h1 class="page-title display">${title}</h1>
+          ${checks.length ? `<div class="segs" style="--n:${checks.length}" aria-hidden="true">${segs}</div>` : ""}
+        </div>
+        ${
+          fixable
+            ? `<button class="btn btn-primary" id="fix" ${S.fixing ? "disabled" : ""}>${I.wrench}${S.fixing ? "Чиню" : "Починить"}</button>`
+            : ready
+              ? `<button class="btn btn-primary" data-go="library">${I.play}В библиотеку</button>`
+              : ""
+        }
       </div>
       <div class="checks">
         ${
           checks.length
-            ? checks
-                .map((c, i) => {
-                  const m = CHECKS[c.id];
-                  const w = working(c.id);
-                  const t = task(`fix:${c.id === "d3dMetal" ? "engine" : c.id}`);
-                  const prog = t?.running ? Object.values(t.progress)[0] : undefined;
-                  const stage = t?.running ? Object.entries(t.stages).find(([, s]) => s.status === "active")?.[0] : null;
-                  const stageName = { download: "Скачиваю", unpack: "Распаковываю", bottle: "Создаю бутылку" }[stage];
-                  const failed = t && t.ok === false && !c.ok;
-                  return `<div class="check ${w ? "work" : c.ok ? "ok" : "no"}" style="animation-delay:${i * 40}ms">
-                    <span class="check-ico">${w ? '<span class="spin"></span>' : c.ok ? I.check : m.icon}</span>
-                    <div class="check-body">
-                      <div class="check-name">${esc(m.name)}</div>
-                      ${w && stageName ? `<div class="check-hint">${stageName}${prog !== undefined ? ` · ${Math.round(prog * 100)}%` : ""}</div>` : ""}
-                      ${w && prog !== undefined ? `<div class="bar"><i style="width:${prog * 100}%"></i></div>` : ""}
-                      ${failed ? `<div class="check-hint" style="color:var(--bad)">${esc(t.error)}</div>` : ""}
-                      ${!c.ok && !c.fixable && c.hint && !failed ? `<div class="check-hint" title="${esc(c.hint)}">${esc(c.hint)}</div>` : ""}
-                    </div>
-                    ${c.ok ? "" : c.fixable ? "" : `<span class="chip warn">вручную</span>`}
-                  </div>`;
-                })
-                .join("")
-            : Array.from({ length: 6 }, () => '<div class="check skeleton" style="height:60px"></div>').join("")
+            ? checks.map((c, i) => checkRow(c, i, working)).join("")
+            : Array.from({ length: 6 }, () => '<div class="check skel"></div>').join("")
         }
       </div>
-      ${fixable ? `<button class="play" id="fix" ${S.fixing ? "disabled" : ""}>${S.fixing ? '<span class="spin"></span>Чиню' : `${I.wrench}Починить`}</button>` : ""}
-    </section>`;
+    </div>`;
   const f = $("#fix");
   if (f) f.onclick = fixAll;
   const lib = main.querySelector("[data-go]");
   if (lib) lib.onclick = () => go("library");
+}
+
+function checkRow(c, i, working) {
+  const m = CHECKS[c.id];
+  const w = working(c.id);
+  const t = task(`fix:${c.id === "d3dMetal" ? "engine" : c.id}`);
+  const prog = t?.running ? Object.values(t.progress)[0] : undefined;
+  const stage = t?.running ? Object.entries(t.stages).find(([, s]) => s.status === "active")?.[0] : null;
+  const stageName = { download: "СКАЧИВАЮ", unpack: "РАСПАКОВЫВАЮ", bottle: "СОЗДАЮ БУТЫЛКУ" }[stage] || "ЧИНЮ";
+  const failed = t && t.ok === false && !c.ok;
+  const status = c.ok
+    ? ["ok", "ОК"]
+    : w
+      ? ["warn", `${stageName}${prog !== undefined ? ` ${Math.round(prog * 100)}%` : ""}`]
+      : c.fixable
+        ? ["warn", "НЕТ"]
+        : ["warn", "ВРУЧНУЮ"];
+  const hint = failed ? t.error : !c.ok && !c.fixable ? c.hint : null;
+  return `<div class="check rise ${w ? "work" : c.ok ? "ok" : "no"}" style="animation-delay:${i * 40}ms">
+    <span class="check-ico">${c.ok ? I.check : m.icon}</span>
+    <div class="check-body">
+      <div class="check-name">${esc(m.name)}</div>
+      ${hint ? `<div class="check-hint">${esc(hint)}</div>` : ""}
+      ${w && prog !== undefined ? `<div class="bar"><i style="transform:scaleX(${prog})"></i></div>` : ""}
+    </div>
+    <span class="status">${dot(status[0])}<span>${status[1]}</span></span>
+  </div>`;
 }
 
 /* ---------- настройки ---------- */
@@ -637,61 +827,65 @@ function renderSettings() {
   if (S.view !== "settings") return;
   const s = S.settings;
   if (!s) {
-    main.innerHTML = `<section class="view settings"><h1>Настройки</h1></section>`;
+    main.innerHTML = `<div class="view settings"><h1 class="page-title display">Настройки</h1><div class="group skel" style="height:240px"></div></div>`;
     return;
   }
   const p = s.profile;
   const env = S.env?.env;
   const bottles = [...new Set([p.bottle, ...(env?.bottles || [])])];
   const engines = env?.engines || [];
-  const sw = (key, on) => `<label class="switch"><input type="checkbox" data-key="${key}" ${on ? "checked" : ""}><i></i></label>`;
   main.innerHTML = `
-    <section class="view settings">
-      <div class="head"><h1>Настройки</h1></div>
-      <div class="group">
-        <h2>Запуск</h2>
-        <div class="field"><div class="field-label">Бутылка</div>
-          <select class="select" data-key="bottle">${bottles.map((b) => `<option ${b === p.bottle ? "selected" : ""}>${esc(b)}</option>`).join("")}</select></div>
-        <div class="field"><div class="field-label">Движок</div>
-          <select class="select" data-key="engine">
-            ${engines.length ? "" : `<option value="">по умолчанию</option>`}
-            ${engines
-              .map((e) => `<option value="${esc(e.id)}" ${(p.engine || "") === e.id ? "selected" : ""}>${esc(e.name)}${e.d3dmetal ? "" : " · без D3DMetal"}</option>`)
-              .join("")}
-          </select></div>
-        <div class="field"><div class="field-label">HUD с FPS</div>${sw("hud", p.hud)}</div>
-        <div class="field"><div class="field-label">Мост в Steam<div class="field-sub">ачивки и лидерборды</div></div>${sw("bridge", p.bridge)}</div>
-        <div class="field"><div class="field-label">Steam Cloud</div>${sw("cloud", p.cloud)}</div>
-      </div>
-      <div class="group" id="steam-group"></div>
-      <div class="group" id="libs"></div>
-      <div class="group">
-        <h2>Ядро</h2>
-        <div class="field"><div class="field-label">Checkout carafe<div class="field-sub" id="backend-now">${esc(S.info?.backend || "")}</div></div>
-          <input class="text" data-key="checkout" placeholder="~/Projects/carafe" value="${esc(s.checkout || "")}" spellcheck="false"></div>
-      </div>
-    </section>`;
+    <div class="view settings">
+      <h1 class="page-title display">Настройки</h1>
+      <section class="group" aria-labelledby="h-run">
+        <h2 id="h-run">Запуск</h2>
+        <div class="rows">
+          <div class="row"><label class="row-label" for="set-bottle">Бутылка</label>
+            <select class="select" id="set-bottle" data-key="bottle">${bottles.map((b) => `<option ${b === p.bottle ? "selected" : ""}>${esc(b)}</option>`).join("")}</select></div>
+          <div class="row"><label class="row-label" for="set-engine">Движок</label>
+            <select class="select" id="set-engine" data-key="engine">
+              ${engines.length ? "" : `<option value="">по умолчанию</option>`}
+              ${engines
+                .map((e) => `<option value="${esc(e.id)}" ${(p.engine || "") === e.id ? "selected" : ""}>${esc(e.name)}${e.d3dmetal ? "" : " · без D3DMetal"}</option>`)
+                .join("")}
+            </select></div>
+          ${PROFILE.map(([k, name]) => `<label class="row toggle"><span class="row-label">${name}</span>${switchHtml(k, name, p[k])}</label>`).join("")}
+        </div>
+      </section>
+      <section class="group" id="steam-group" aria-label="Steam"></section>
+      <section class="group" id="libs" aria-label="Библиотеки"></section>
+      <section class="group" aria-labelledby="h-core">
+        <h2 id="h-core">Ядро</h2>
+        <div class="rows">
+          <div class="row"><label class="row-label" for="set-checkout">Checkout carafe<span class="row-sub" id="backend-now">${esc(S.info?.backend || "")}</span></label>
+            <input class="text" id="set-checkout" data-key="checkout" placeholder="~/Projects/carafe" value="${esc(s.checkout || "")}" spellcheck="false"></div>
+        </div>
+      </section>
+    </div>`;
   main.querySelectorAll("[data-key]").forEach((el) => el.addEventListener("change", () => saveSetting(el)));
+  wireSwitches(main);
   renderLibs();
   loadLibs();
   renderSteamGroup();
 }
 
-async function saveSetting(el) {
+function saveSetting(el) {
   const key = el.dataset.key;
+  saveSettings((s) => {
+    if (key === "checkout") s.checkout = el.value.trim() || null;
+    else if (key === "engine") s.profile.engine = el.value || null;
+    else s.profile[key] = el.value;
+  }, key);
+}
+
+async function saveSettings(change, key) {
   const s = structuredClone(S.settings);
-  if (key === "checkout") {
-    const v = el.value.trim();
-    s.checkout = v || null;
-  } else if (el.type === "checkbox") s.profile[key] = el.checked;
-  else if (key === "engine") s.profile.engine = el.value || null;
-  else s.profile[key] = el.value;
+  change(s);
   try {
     const r = await invoke("save_settings", { settings: s });
     S.settings = s;
     if (S.info.backend !== r.backend) {
       S.info.backend = r.backend;
-      $("#backend-label").textContent = r.backend;
       S.cloud = {};
       S.games = null;
       loadGames();
@@ -699,8 +893,11 @@ async function saveSetting(el) {
     const now = $("#backend-now");
     if (now) now.textContent = r.backend;
     if (key === "engine" || key === "bottle" || key === "checkout") loadEnv();
+    if (S.view === "game") renderLabel();
   } catch (e) {
     toast(e);
+    if (S.view === "settings") renderSettings();
+    if (S.view === "game") renderProfile();
   }
 }
 
@@ -713,7 +910,6 @@ async function saveSetting(el) {
     toast(e);
     S.info = { backend: "" };
   }
-  $("#backend-label").textContent = S.info.backend;
   const route = S.info.route || "";
   const [r, id] = route.split("/");
   go(r === "game" || r === "play" ? "library" : r === "setup" || r === "settings" || r === "downloads" ? r : "library");

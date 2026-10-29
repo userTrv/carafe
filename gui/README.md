@@ -33,6 +33,8 @@ cargo clippy --all-targets -- -D warnings && cargo fmt --check && cargo test
 
 Библиотеки, перенос игр и очередь загрузок (`ui/library.js`, `ui/library.css`) `CliBackend` берёт прямо из `carafe-core`: у bash-версии их нет. Очередь обрабатывает поток GUI загрузчиком steamcmd (нужен сохранённый вход `carafe steam login USER`); при выходе загрузка останавливается и продолжается при следующем запуске. Папку выбирает системный диалог `tauri-plugin-dialog`, он зовётся из Rust — JS-доступа к плагину в capabilities нет.
 
+Облик — по `DESIGN.md`. Шрифты Geist и Geist Mono лежат в `ui/fonts/` (woff2, latin и cyrillic), иконки Phosphor встроены в `ui/icons.js`: окно ничего не грузит из сети, кроме обложек Steam CDN (они разрешены в CSP).
+
 Всё, что уходит в окно, проходит через `redact.rs`: Steam ID вырезается из путей и логов.
 
 ## Подключение carafe-core

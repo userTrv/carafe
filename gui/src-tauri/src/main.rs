@@ -314,15 +314,15 @@ async fn download_action(
     blocking(move || b.download_action(appid, action)).await
 }
 
-/// QR в SVG: тёмные модули на белом с полями — так его читает камера приложения Steam.
+/// QR в SVG: чёрные модули на светлом (#F2F2F2) с полями — так его читает камера приложения Steam.
 fn qr_svg(url: &str) -> Value {
     use qrcode::render::svg;
     match qrcode::QrCode::new(url.as_bytes()) {
         Ok(code) => code
             .render::<svg::Color<'_>>()
             .min_dimensions(240, 240)
-            .dark_color(svg::Color("#0b0b10"))
-            .light_color(svg::Color("#ffffff"))
+            .dark_color(svg::Color("#000000"))
+            .light_color(svg::Color("#F2F2F2"))
             .build()
             .into(),
         Err(_) => Value::Null,
