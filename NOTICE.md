@@ -5,7 +5,8 @@
 
 | Что | Лицензия | Как попадает к пользователю |
 |---|---|---|
-| Движок [soju](https://github.com/userTrv/soju) (Wine из исходников CrossOver) | LGPL 2.1+ | carafe скачивает релиз soju; лицензии и ссылки на исходники — в `share/doc/soju/` движка |
+| Движок по умолчанию: сборка Wine от Gcenx с D3DMetal из GPTK 3.0 | LGPL 2.1+ (Wine); D3DMetal — лицензия Apple | `carafe engine install` скачивает её с GitHub Gcenx; carafe её не распространяет |
+| Движок [soju](https://github.com/userTrv/soju) (Wine из исходников CrossOver), по желанию через `CARAFE_ENGINE_DIR` | LGPL 2.1+ | релиз soju; лицензии и ссылки на исходники — в `share/doc/soju/` движка |
 | Мост Steamworks из soju | LGPL 2.1+ | собирается на машине пользователя |
 | Steamworks SDK (`libsteam_api.dylib`) | собственность Valve | скачивается при сборке моста, carafe его не распространяет |
 | D3DMetal из Game Porting Toolkit | лицензия Apple | берётся из копии GPTK у пользователя, carafe его не распространяет |
