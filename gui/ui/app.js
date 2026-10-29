@@ -963,7 +963,9 @@ function renderSettings() {
         <h2 id="h-core">Ядро</h2>
         <div class="rows">
           <div class="row"><label class="row-label" for="set-checkout">Checkout carafe<span class="row-sub" id="backend-now">${esc(S.info?.backend || "")}</span></label>
-            <input class="text" id="set-checkout" data-key="checkout" placeholder="~/Projects/carafe" value="${esc(s.checkout || "")}" spellcheck="false"></div>
+            <input class="text" id="set-checkout" data-key="checkout" placeholder="${S.info?.bundled ? "встроенный" : "~/Projects/carafe"}" value="${esc(s.checkout || "")}" spellcheck="false"></div>
+          <div class="row"><label class="row-label" for="set-soju">Checkout soju</label>
+            <input class="text" id="set-soju" data-key="soju" placeholder="рядом с carafe" value="${esc(s.soju || "")}" spellcheck="false"></div>
         </div>
       </section>
     </div>`;
@@ -977,7 +979,7 @@ function renderSettings() {
 function saveSetting(el) {
   const key = el.dataset.key;
   saveSettings((s) => {
-    if (key === "checkout") s.checkout = el.value.trim() || null;
+    if (key === "checkout" || key === "soju") s[key] = el.value.trim() || null;
     else if (key === "engine") s.profile.engine = el.value || null;
     else s.profile[key] = el.value;
   }, key);
@@ -997,7 +999,7 @@ async function saveSettings(change, key) {
     }
     const now = $("#backend-now");
     if (now) now.textContent = r.backend;
-    if (key === "engine" || key === "bottle" || key === "checkout") loadEnv();
+    if (["engine", "bottle", "checkout", "soju"].includes(key)) loadEnv();
     if (S.view === "game") renderLabel();
   } catch (e) {
     toast(e);

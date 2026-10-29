@@ -31,8 +31,15 @@
     "targets": ["app"],
     "category": "Game",
     "icon": ["icons/icon.png", "icons/icon.icns"],
+    "resources": {
+      "../../bin/carafe": "bin/carafe"
+    },
     "macOS": {
-      "minimumSystemVersion": "13.0"
+      "minimumSystemVersion": "13.0",
+      "files": {
+        "MacOS/carafe-steam": "../../steam/dist/osx-arm64/carafe-steam",
+        "MacOS/SteamKit2.dll": "../../steam/dist/osx-arm64/SteamKit2.dll"
+      }
     }
   }
 }

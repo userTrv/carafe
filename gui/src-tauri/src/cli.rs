@@ -37,8 +37,9 @@ pub struct CliBackend {
 }
 
 impl CliBackend {
-    /// `checkout` — корень checkout carafe (там лежит `bin/carafe`).
-    pub fn new(checkout: &Path) -> Result<Self> {
+    /// `checkout` — корень checkout carafe (там лежит `bin/carafe`); `soju` — checkout soju,
+    /// по умолчанию рядом с carafe.
+    pub fn new(checkout: &Path, soju: Option<PathBuf>) -> Result<Self> {
         let script = checkout.join("bin/carafe");
         if !is_exec(&script) {
             return Err(BackendError::new(format!(
@@ -49,14 +50,8 @@ impl CliBackend {
         let home = std::env::var_os("CARAFE_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| home_dir().join("Library/Application Support/carafe"));
-        let soju = std::env::var_os("CARAFE_SOJU")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                checkout
-                    .parent()
-                    .map(|p| p.join("soju"))
-                    .unwrap_or_default()
-            });
+        let soju = soju
+            .unwrap_or_else(|| checkout.parent().map(|p| p.join("soju")).unwrap_or_default());
         let mut config = Config::from_env().map_err(core_err)?;
         config.home = home.clone();
         let core = Carafe::new(config).with_logger(|_| {});
@@ -154,6 +149,7 @@ impl CliBackend {
                 if profile.bridge { "1" } else { "0" }.into(),
             ),
             ("CARAFE_CLOUD", if profile.cloud { "1" } else { "0" }.into()),
+            ("CARAFE_SOJU", self.soju.display().to_string()),
             // Приложение из Finder получает урезанный PATH.
             (
                 "PATH",

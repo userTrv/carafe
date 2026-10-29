@@ -16,13 +16,23 @@ cargo clippy --all-targets -- -D warnings && cargo fmt --check && cargo test
 | Переменная | Что делает |
 | --- | --- |
 | `CARAFE_GUI_BACKEND` | `mock` — демо-данные; иначе `CliBackend`, если известен checkout |
-| `CARAFE_CHECKOUT` | checkout carafe с `bin/carafe` (то же — поле «Checkout carafe» в настройках) |
+| `CARAFE_CHECKOUT` | checkout carafe с `bin/carafe` (то же — поле «Checkout carafe» в настройках); без него carafe.app берёт свой `bin/carafe` |
 | `CARAFE_MOCK=fresh` | демо первого запуска: нет движка, бутылки и Steam |
 | `CARAFE_MOCK_STEAM=in` | демо: уже вошёл в Steam, в библиотеке — все купленные игры |
 | `CARAFE_GUI_ROUTE` | открыть экран сразу: `game/<appid>` (`game/<appid>/<px>` — с прокруткой), `play/<appid>`, `setup`, `settings`, `downloads`; `install/<appid>` и `move/<appid>` — с открытым меню библиотек, `move/<appid>/go` — сразу перенос; `login` — окно входа в Steam |
-| `CARAFE_HOME`, `CARAFE_SOJU` | как у `bin/carafe` |
+| `CARAFE_SOJU` | checkout soju для моста (то же — поле «Checkout soju»); по умолчанию рядом с checkout carafe |
+| `CARAFE_HOME` | как у `bin/carafe` |
 
-Настройки лежат в `~/Library/Application Support/dev.usertrv.carafe/settings.json`. Сборка `.app` — `cargo install tauri-cli` и `cargo tauri build`, в этом шаге не настроена.
+Настройки лежат в `~/Library/Application Support/dev.usertrv.carafe/settings.json`.
+
+### carafe.app
+
+```bash
+steam/build.sh
+cd gui/src-tauri && cargo tauri build
+```
+
+Нужен `tauri-cli` той же ветки, что `tauri` в `Cargo.lock` (`cargo install tauri-cli --version 2.12.4 --locked`). В бандл попадают `bin/carafe` (`Contents/Resources`) и хелпер входа `carafe-steam` с `SteamKit2.dll` (`Contents/MacOS`). Мост к Steam собирается из checkout soju, его путь — в поле «Checkout soju». Подпись ad-hoc: приложение для своего Mac, не для раздачи.
 
 ## Как устроено
 
