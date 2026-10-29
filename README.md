@@ -105,3 +105,7 @@ bin/carafe cloud push <appid>
 | `CARAFE_SOJU`   | checkout soju (по умолчанию `../soju`)      |
 | `CARAFE_HOME`   | где всё хранится                            |
 | `WINEDEBUG`     | логи Wine (по умолчанию выключены)          |
+
+## Лицензия
+
+MIT — см. [LICENSE](LICENSE). Сторонние части (движок soju, Steamworks SDK, D3DMetal) и их лицензии — в [NOTICE.md](NOTICE.md).
