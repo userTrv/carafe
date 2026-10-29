@@ -54,16 +54,19 @@ usage() {
 
 Переменные: CARAFE_BOTTLE (префикс, default), CARAFE_EXE (exe игры вручную),
             CARAFE_HUD=1 (Metal HUD с FPS), CARAFE_BRIDGE=0 (запуск без моста).
+            CARAFE_ENGINE_DIR (свой движок, например dist/soju-engine из soju).
 EOF
 }
 
-engine_dir() { echo "$ENGINES/$ENGINE_NAME"; }
+# CARAFE_ENGINE_DIR — свой движок вместо скачанного, например собранный soju (dist/soju-engine).
+engine_dir() { echo "${CARAFE_ENGINE_DIR:-$ENGINES/$ENGINE_NAME}"; }
 
 wine_bin() {
   local d; d="$(engine_dir)"
   [[ -d "$d" ]] || die "движок не установлен: carafe engine install"
   local w
-  for name in wine64 wine; do
+  # bin/soju — wine движка soju с его настройками (msync, D3DMetal).
+  for name in soju wine64 wine; do
     w="$(find "$d" -type f -path "*/bin/$name" -perm -u+x 2>/dev/null | head -1)"
     [[ -n "$w" ]] && { echo "$w"; return; }
   done
