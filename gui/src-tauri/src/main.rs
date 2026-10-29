@@ -51,9 +51,7 @@ fn pick_backend(settings: &Settings) -> Arc<dyn Backend> {
     if forced == "mock" {
         return Arc::new(mock::MockBackend::new());
     }
-    let checkout = std::env::var("CARAFE_CHECKOUT")
-        .ok()
-        .or_else(|| settings.checkout.clone());
+    let checkout = std::env::var("CARAFE_CHECKOUT").ok().or_else(|| settings.checkout.clone());
     match checkout.map(|c| cli::CliBackend::new(&expand_home(&c))) {
         Some(Ok(b)) => Arc::new(b),
         Some(Err(e)) => {
@@ -66,10 +64,7 @@ fn pick_backend(settings: &Settings) -> Arc<dyn Backend> {
 
 fn expand_home(path: &str) -> PathBuf {
     match path.strip_prefix("~/") {
-        Some(rest) => std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_default()
-            .join(rest),
+        Some(rest) => std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join(rest),
         None => PathBuf::from(path),
     }
 }
@@ -91,13 +86,8 @@ fn err(e: impl std::fmt::Display) -> String {
     redact::redact(&e.to_string())
 }
 
-async fn blocking<T: Send + 'static>(
-    f: impl FnOnce() -> backend::Result<T> + Send + 'static,
-) -> Result<T, String> {
-    tauri::async_runtime::spawn_blocking(f)
-        .await
-        .map_err(err)?
-        .map_err(err)
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> backend::Result<T> + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f).await.map_err(err)?.map_err(err)
 }
 
 #[tauri::command]
@@ -170,15 +160,15 @@ fn spawn_task(
         let h = handle.clone();
         let t = task.clone();
         let sink = move |e: TaskEvent| {
-            let _ = h.emit("task", json!({ "task": t, "event": clean(e) }));
+            let event = match e {
+                // URL входа в окно не уходит — только картинка.
+                TaskEvent::Qr { url } => json!({ "kind": "qr", "svg": qr_svg(&url) }),
+                e => clean(e),
+            };
+            let _ = h.emit("task", json!({ "task": t, "event": event }));
         };
         let res = work(b.as_ref(), &p, &sink);
-        handle
-            .state::<App>()
-            .busy
-            .lock()
-            .expect("busy")
-            .remove(&task);
+        handle.state::<App>().busy.lock().expect("busy").remove(&task);
         let end = match res {
             Ok(code) => json!({ "task": task, "ok": true, "code": code }),
             Err(e) => json!({ "task": task, "ok": false, "error": err(e) }),
@@ -190,27 +180,18 @@ fn spawn_task(
 
 #[tauri::command]
 fn launch(handle: AppHandle, app: State<'_, App>, appid: AppId) -> Result<(), String> {
-    spawn_task(handle, &app, format!("launch:{appid}"), move |b, p, ev| {
-        b.launch(appid, p, ev)
-    })
+    spawn_task(handle, &app, format!("launch:{appid}"), move |b, p, ev| b.launch(appid, p, ev))
 }
 
 #[tauri::command]
 fn build_bridge(handle: AppHandle, app: State<'_, App>, appid: AppId) -> Result<(), String> {
-    spawn_task(handle, &app, format!("bridge:{appid}"), move |b, p, ev| {
-        b.build_bridge(appid, p, ev).map(|_| 0)
-    })
+    spawn_task(handle, &app, format!("bridge:{appid}"), move |b, p, ev| b.build_bridge(appid, p, ev).map(|_| 0))
 }
 
 #[tauri::command]
 fn fix(handle: AppHandle, app: State<'_, App>, check: CheckId) -> Result<(), String> {
-    let name = serde_json::to_value(check)
-        .ok()
-        .and_then(|v| v.as_str().map(String::from))
-        .unwrap_or_default();
-    spawn_task(handle, &app, format!("fix:{name}"), move |b, p, ev| {
-        b.fix(check, p, ev).map(|_| 0)
-    })
+    let name = serde_json::to_value(check).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
+    spawn_task(handle, &app, format!("fix:{name}"), move |b, p, ev| b.fix(check, p, ev).map(|_| 0))
 }
 
 #[tauri::command]
@@ -223,18 +204,11 @@ async fn libraries(app: State<'_, App>) -> Result<Value, String> {
 #[tauri::command]
 async fn pick_folder(handle: AppHandle) -> Result<Option<String>, String> {
     let picked = tauri::async_runtime::spawn_blocking(move || {
-        handle
-            .dialog()
-            .file()
-            .set_title("Папка библиотеки")
-            .set_can_create_directories(true)
-            .blocking_pick_folder()
+        handle.dialog().file().set_title("Папка библиотеки").set_can_create_directories(true).blocking_pick_folder()
     })
     .await
     .map_err(err)?;
-    Ok(picked
-        .and_then(|p| p.into_path().ok())
-        .map(|p| p.display().to_string()))
+    Ok(picked.and_then(|p| p.into_path().ok()).map(|p| p.display().to_string()))
 }
 
 #[tauri::command]
@@ -259,24 +233,14 @@ async fn install(app: State<'_, App>, appid: AppId, library: Option<String>) -> 
 }
 
 #[tauri::command]
-fn move_game(
-    handle: AppHandle,
-    app: State<'_, App>,
-    appid: AppId,
-    library: String,
-) -> Result<(), String> {
+fn move_game(handle: AppHandle, app: State<'_, App>, appid: AppId, library: String) -> Result<(), String> {
     let task = format!("move:{appid}");
     let cancel = Arc::new(AtomicBool::new(false));
-    app.cancels
-        .lock()
-        .expect("cancels")
-        .insert(task.clone(), cancel.clone());
+    app.cancels.lock().expect("cancels").insert(task.clone(), cancel.clone());
     let h = handle.clone();
     let t = task.clone();
     let r = spawn_task(handle, &app, task.clone(), move |b, _, ev| {
-        let r = b
-            .move_game(appid, std::path::Path::new(&library), &cancel, ev)
-            .map(|_| 0);
+        let r = b.move_game(appid, std::path::Path::new(&library), &cancel, ev).map(|_| 0);
         h.state::<App>().cancels.lock().expect("cancels").remove(&t);
         r
     });
@@ -300,13 +264,66 @@ async fn downloads(app: State<'_, App>) -> Result<Value, String> {
 }
 
 #[tauri::command]
-async fn download_action(
-    app: State<'_, App>,
-    appid: AppId,
-    action: DownloadAction,
-) -> Result<(), String> {
+async fn download_action(app: State<'_, App>, appid: AppId, action: DownloadAction) -> Result<(), String> {
     let b = app.backend();
     blocking(move || b.download_action(appid, action)).await
+}
+
+/// QR в SVG: тёмные модули на белом с полями — так его читает камера приложения Steam.
+fn qr_svg(url: &str) -> Value {
+    use qrcode::render::svg;
+    match qrcode::QrCode::new(url.as_bytes()) {
+        Ok(code) => code
+            .render::<svg::Color<'_>>()
+            .min_dimensions(240, 240)
+            .dark_color(svg::Color("#0b0b10"))
+            .light_color(svg::Color("#ffffff"))
+            .build()
+            .into(),
+        Err(_) => Value::Null,
+    }
+}
+
+#[tauri::command]
+async fn steam_account(app: State<'_, App>) -> Result<Value, String> {
+    let b = app.backend();
+    blocking(move || b.steam_account()).await.map(clean)
+}
+
+/// Вход по QR — задача `login`: события `qr` с SVG, итог — `task-end`. Отмена —
+/// `cancel_task("login")`.
+#[tauri::command]
+fn steam_login(handle: AppHandle, app: State<'_, App>) -> Result<(), String> {
+    let task = "login".to_string();
+    let cancel = Arc::new(AtomicBool::new(false));
+    app.cancels.lock().expect("cancels").insert(task.clone(), cancel.clone());
+    let h = handle.clone();
+    let r = spawn_task(handle, &app, task.clone(), move |b, _, ev| {
+        // Отмена — не ошибка: окно просто закрывает QR (код 1 вместо тоста).
+        let r = match b.steam_login(&cancel, ev) {
+            Ok(_) => Ok(0),
+            Err(_) if cancel.load(Ordering::Relaxed) => Ok(1),
+            Err(e) => Err(e),
+        };
+        h.state::<App>().cancels.lock().expect("cancels").remove("login");
+        r
+    });
+    if r.is_err() {
+        app.cancels.lock().expect("cancels").remove(&task);
+    }
+    r
+}
+
+#[tauri::command]
+async fn steam_logout(app: State<'_, App>) -> Result<(), String> {
+    let b = app.backend();
+    blocking(move || b.steam_logout()).await
+}
+
+#[tauri::command]
+async fn owned_games(app: State<'_, App>) -> Result<Value, String> {
+    let b = app.backend();
+    blocking(move || b.owned_games()).await.map(clean)
 }
 
 fn main() {
@@ -318,10 +335,8 @@ fn main() {
                 .app_config_dir()
                 .map(|d| d.join("settings.json"))
                 .unwrap_or_else(|_| PathBuf::from("settings.json"));
-            let settings: Settings = fs::read_to_string(&path)
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default();
+            let settings: Settings =
+                fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
             let backend = pick_backend(&settings);
             tauri_app.manage(App {
                 backend: RwLock::new(backend),
@@ -350,6 +365,10 @@ fn main() {
             cancel_task,
             downloads,
             download_action,
+            steam_account,
+            steam_login,
+            steam_logout,
+            owned_games,
         ])
         .build(tauri::generate_context!())
         .expect("carafe-gui")

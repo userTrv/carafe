@@ -51,10 +51,7 @@ mod tests {
     #[test]
     fn path_segment_is_dropped() {
         assert_eq!(redact("76561198000000001/stats.json"), "stats.json");
-        assert_eq!(
-            redact("Saves/CloudDir/76561198000000001/progression.json"),
-            "Saves/CloudDir/progression.json"
-        );
+        assert_eq!(redact("Saves/CloudDir/76561198000000001/progression.json"), "Saves/CloudDir/progression.json");
     }
 
     #[test]
@@ -67,10 +64,7 @@ mod tests {
 
     #[test]
     fn other_numbers_stay() {
-        assert_eq!(
-            redact("appid 3405340, порт 54310"),
-            "appid 3405340, порт 54310"
-        );
+        assert_eq!(redact("appid 3405340, порт 54310"), "appid 3405340, порт 54310");
         assert_eq!(redact("765611980000000012"), "765611980000000012");
         assert_eq!(redact("→ ↓ ок"), "→ ↓ ок");
     }
