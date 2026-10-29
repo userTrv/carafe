@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>carafe</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="drag" data-tauri-drag-region></div>
+    <aside class="side">
+      <div class="brand" data-tauri-drag-region>
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-name">carafe</span>
+      </div>
+      <nav class="nav">
+        <button class="nav-item" data-view="library">
+          <svg viewBox="0 0 24 24"><path d="M4 4h6v7H4zM14 4h6v4h-6zM14 12h6v8h-6zM4 15h6v5H4z" /></svg>
+          <span>Библиотека</span>
+        </button>
+        <button class="nav-item" data-view="setup">
+          <svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V7z" /></svg>
+          <span>Окружение</span>
+          <i class="nav-dot" id="env-dot" hidden></i>
+        </button>
+        <button class="nav-item" data-view="settings">
+          <svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8" /><circle cx="16" cy="7" r="2" /><circle cx="10" cy="17" r="2" /></svg>
+          <span>Настройки</span>
+        </button>
+      </nav>
+      <div class="side-foot">
+        <span class="chip chip-quiet" id="backend-label"></span>
+      </div>
+    </aside>
+    <main class="main" id="main"></main>
+    <div class="toasts" id="toasts"></div>
+    <script src="app.js"></script>
+  </body>
+</html>
