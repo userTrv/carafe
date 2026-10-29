@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- carafe-steam: вход в Steam по QR, список своих игр и загрузка депо для carafe.
+       Протокол — steam/PROTOCOL.md. SteamKit2 — LGPL-2.1, github.com/SteamRE/SteamKit. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>carafe-steam</AssemblyName>
+    <RootNamespace>Carafe.Steam</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- Воспроизводимый restore: packages.lock.json с contentHash, в CI и build.sh — locked-mode. -->
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RuntimeIdentifiers>osx-arm64;osx-x64</RuntimeIdentifiers>
+    <!-- Один исполняемый файл с рантаймом внутри. Тримминг не включаем: protobuf-net
+         в SteamKit2 работает через рефлексию. -->
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <DebugType>embedded</DebugType>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SteamKit2" Version="[3.5.0]" />
+  </ItemGroup>
+</Project>

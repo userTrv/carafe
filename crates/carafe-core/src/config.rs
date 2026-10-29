@@ -28,6 +28,8 @@ pub struct Config {
     pub hud: bool,
     /// Steam для Mac: `game import` ищет в нём depot, скачанные через консоль.
     pub steam_dir: PathBuf,
+    /// `CARAFE_STEAM_HELPER` — свой `carafe-steam`; без него ищется `steam/dist/<rid>/` рядом с carafe.
+    pub steam_helper: Option<PathBuf>,
 }
 
 impl Config {
@@ -53,6 +55,7 @@ impl Config {
             exe: var("CARAFE_EXE").map(|v| v.to_string_lossy().into_owned()),
             hud: is("CARAFE_HUD", "1"),
             steam_dir: support.join("Steam"),
+            steam_helper: var("CARAFE_STEAM_HELPER").map(PathBuf::from),
         })
     }
 

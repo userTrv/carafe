@@ -1,5 +1,7 @@
 //! carafe — те же команды, что у bash-версии `bin/carafe`, поверх carafe-core.
 
+mod account;
+
 use std::ffi::OsString;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
@@ -11,8 +13,13 @@ const USAGE: &str = "\
 Использование:
   carafe engine install            скачать и распаковать Wine + D3DMetal
   carafe bottle create [NAME]      создать префикс Wine (по умолчанию: default)
+  carafe login [--json]            войти в Steam по QR из приложения Steam (без пароля)
+  carafe logout                    выйти: отозвать вход и стереть его из Связки ключей
+  carafe account [--json]          под каким аккаунтом вошёл (без сети)
+  carafe library [--json]          все купленные игры, установленные отмечены
   carafe steam login USER          войти в steamcmd (пароль и Steam Guard вводишь сам)
-  carafe game install APPID USER   скачать Windows-сборку игры через steamcmd
+  carafe game install APPID [--json]  скачать Windows-сборку с аккаунта из carafe login
+  carafe game install APPID USER   то же через steamcmd
   carafe game import APPID [DIR]   забрать depot, скачанный консолью Steam (download_depot)
   carafe game run APPID [ARGS...]  запустить игру (exe ищется в папке игры)
   carafe game list                 установленные игры: мост, правила облака
@@ -25,7 +32,11 @@ const USAGE: &str = "\
 Переменные: CARAFE_BOTTLE (префикс, default), CARAFE_EXE (exe игры вручную),
             CARAFE_HUD=1 (Metal HUD с FPS), CARAFE_BRIDGE=0 (запуск без моста).
             CARAFE_ENGINE_DIR (свой движок, например dist/soju-engine из soju),
-            CARAFE_SOJU (checkout soju, по умолчанию ../soju рядом с carafe).";
+            CARAFE_SOJU (checkout soju, по умолчанию ../soju рядом с carafe).
+            CARAFE_STEAM_HELPER (carafe-steam, по умолчанию steam/dist рядом с carafe).
+
+Вход в Steam идёт через сторонний клиент на SteamKit2: Valve такие терпит, но официально
+не поддерживает.";
 
 enum Fail {
     /// Неизвестная команда: справка и код 1, как `usage; exit 1`.
@@ -67,6 +78,15 @@ fn appid(args: &[OsString], i: usize) -> Result<u32, Error> {
     parse_appid(need(args, i, "нужен APPID")?)
 }
 
+/// `--json` после команды: машинный вывод для GUI. Другие лишние аргументы — ошибка.
+fn json_flag(args: &[OsString], from: usize) -> Result<bool, Fail> {
+    match args.get(from..).unwrap_or_default() {
+        [] => Ok(false),
+        [a] if a == "--json" => Ok(true),
+        _ => Err(Fail::Usage),
+    }
+}
+
 fn run(args: &[OsString]) -> Result<i32, Fail> {
     let cmd = arg(args, 0).unwrap_or("");
     let sub = arg(args, 1).unwrap_or("");
@@ -89,9 +109,16 @@ fn run(args: &[OsString]) -> Result<i32, Fail> {
             }
             c.steam_login(need(args, 2, "нужен логин Steam")?)?;
         }
+        ("login", _) => account::login(&c, json_flag(args, 1)?)?,
+        ("logout", _) => account::logout(&c)?,
+        ("account", _) => account::status(&c, json_flag(args, 1)?)?,
+        ("library", _) => account::library(&c, json_flag(args, 1)?)?,
         ("game", "install") => {
             let id = appid(args, 2)?;
-            c.game_install(id, need(args, 3, "нужен логин Steam")?)?;
+            match arg(args, 3) {
+                None | Some("--json") => account::install(&c, id, json_flag(args, 3)?)?,
+                Some(user) => c.game_install(id, user)?,
+            }
         }
         ("game", "import") => {
             let id = appid(args, 2)?;

@@ -151,7 +151,7 @@ impl Carafe {
 }
 
 /// Steamworks внутри игры ищет appid рядом с exe, когда Steam-клиент не запущен.
-fn write_appid(dir: &Path, appid: u32) -> Result<()> {
+pub(crate) fn write_appid(dir: &Path, appid: u32) -> Result<()> {
     let p = dir.join("steam_appid.txt");
     fs::write(&p, format!("{appid}\n")).at(&p)
 }

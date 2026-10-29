@@ -3,7 +3,11 @@
 //!
 //! Всё начинается с [`Carafe`]: настройки ([`Config`]) и приёмник сообщений ([`Log`]). CLI
 //! печатает сообщения в stderr, GUI может забирать их себе через [`Carafe::with_logger`].
+//!
+//! Аккаунт Steam ([`account`]) — через хелпер `carafe-steam` на SteamKit2 (`steam/`): вход по QR,
+//! купленные игры, загрузка депо. Токен — в Связке ключей ([`Keychain`]).
 
+pub mod account;
 pub mod appinfo;
 pub mod bridge;
 pub mod cloud;
@@ -15,6 +19,7 @@ pub mod game;
 pub mod launch;
 mod process;
 pub mod steam;
+pub mod steamclient;
 pub mod vdf;
 
 use std::fs;
@@ -22,6 +27,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 
+pub use account::{Keychain, MemoryStore, OwnedGame, TokenStore};
 pub use appinfo::{AppInfo, CloudRule};
 pub use bridge::{BridgeState, BridgeTarget};
 pub use cloud::{CloudAction, CloudEntry, CloudMode, CloudReport, CloudSummary};
@@ -30,6 +36,7 @@ pub use error::{Error, Result};
 pub use game::SteamApiDll;
 pub use launch::LaunchEvent;
 pub use process::{Log, exit_code};
+pub use steamclient::{Account, AppDepots, Credentials, DownloadEvent, DownloadResult, LoginEvent, OwnedApp};
 
 pub type Logger = Arc<dyn Fn(Log) + Send + Sync>;
 
@@ -38,6 +45,8 @@ pub type Logger = Arc<dyn Fn(Log) + Send + Sync>;
 pub struct Carafe {
     pub config: Config,
     logger: Logger,
+    /// Где лежит refresh token Steam: по умолчанию Связка ключей.
+    tokens: Arc<dyn TokenStore>,
 }
 
 impl std::fmt::Debug for Carafe {
@@ -69,7 +78,7 @@ pub struct GameInfo {
 
 impl Carafe {
     pub fn new(config: Config) -> Carafe {
-        Carafe { config, logger: Arc::new(stderr_logger) }
+        Carafe { config, logger: Arc::new(stderr_logger), tokens: Arc::new(Keychain) }
     }
 
     /// Настройки из переменных `CARAFE_*`.
@@ -79,6 +88,12 @@ impl Carafe {
 
     pub fn with_logger(mut self, f: impl Fn(Log) + Send + Sync + 'static) -> Carafe {
         self.logger = Arc::new(f);
+        self
+    }
+
+    /// Своё хранилище токена Steam вместо Связки ключей (тесты, демо).
+    pub fn with_token_store(mut self, store: Arc<dyn TokenStore>) -> Carafe {
+        self.tokens = store;
         self
     }
 
