@@ -261,6 +261,7 @@ function go(view, appid = null) {
     else b.removeAttribute("aria-current");
   });
   main.scrollTop = 0;
+  main.onscroll = null;
   if (view === "library") renderLibrary();
   if (view === "game") {
     renderGame();
@@ -534,9 +535,15 @@ function renderGame() {
     return;
   }
   main.innerHTML = `
+    <div class="game-backdrop" aria-hidden="true">
+      <img class="art bd-blur" src="${esc(g.cover.hero)}" alt="" data-fallback="${esc(g.cover.header)}">
+      <div class="bd-shade"></div>
+      <div class="bd-band" id="bd-band">
+        <img class="art" src="${esc(g.cover.hero)}" alt="" data-fallback="${esc(g.cover.header)}" data-name="${esc(g.name)}">
+        <div class="scrim"></div>
+      </div>
+    </div>
     <header class="game-hero">
-      <img class="art" src="${esc(g.cover.hero)}" alt="" data-fallback="${esc(g.cover.header)}" data-name="${esc(g.name)}">
-      <div class="scrim"></div>
       <button class="btn btn-sm back" id="back">${I.back}Библиотека</button>
       <div class="game-head">
         <h1 class="game-title display">${esc(g.name)}</h1>
@@ -564,10 +571,35 @@ function renderGame() {
   $("#back").onclick = () => go("library");
   const r = $("#cloud-refresh");
   if (r) r.onclick = () => loadCloud(g.appid);
+  followBackdrop();
   refreshGame();
   renderProfile();
   renderCloud();
   renderLog();
+}
+
+// Арт шапки при прокрутке уезжает вверх медленнее страницы, растёт и гаснет, открывая
+// размытую копию на всё окно — фон под панелями остаётся цветом игры, а не чёрным.
+function followBackdrop() {
+  const band = $("#bd-band");
+  const blur = main.querySelector(".bd-blur");
+  const head = main.querySelector(".game-hero");
+  if (!band || !head) return;
+  const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let frame = 0;
+  const paint = () => {
+    frame = 0;
+    const y = main.scrollTop;
+    const p = Math.min(1, y / Math.max(1, head.offsetHeight));
+    band.style.height = `${head.offsetHeight}px`;
+    band.style.opacity = String(1 - p);
+    if (!still) band.style.transform = `translate3d(0, ${-y * 0.5}px, 0) scale(${1 + 0.25 * p})`;
+    if (blur) blur.style.opacity = String(0.6 + 0.4 * p);
+  };
+  main.onscroll = () => {
+    if (!frame) frame = requestAnimationFrame(paint);
+  };
+  paint();
 }
 
 // Всё, что зависит от игры и задач, без пересборки лога и облака.
@@ -911,12 +943,14 @@ async function saveSettings(change, key) {
     S.info = { backend: "" };
   }
   const route = S.info.route || "";
-  const [r, id] = route.split("/");
+  const [r, id, y] = route.split("/");
   go(r === "game" || r === "play" ? "library" : r === "setup" || r === "settings" || r === "downloads" ? r : "library");
   await Promise.all([loadGames(), loadEnv(), loadAccount()]);
   if (r === "game" || r === "play") {
     go("game", Number(id));
     if (r === "play") play(Number(id));
+    // game/<appid>/<px> — сразу прокрутить: для снимков фона при прокрутке.
+    if (y) requestAnimationFrame(() => (main.scrollTop = Number(y)));
   } else if (!r && S.env && !S.env.ready && S.env.env.checks.some((c) => !c.ok && c.id !== "steam")) {
     // Первый запуск: сначала окружение.
     go("setup");
