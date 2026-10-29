@@ -43,6 +43,36 @@ bin/carafe game run <appid>
 bin/carafe game import <appid>
 ```
 
+## Библиотеки и загрузки (Rust-версия)
+
+Игры могут лежать в нескольких папках, например на внешнем SSD: `<папка>/<appid>`. Встроенная — прежняя `games/`; без настроек всё как раньше. Список — в `libraryfolders.vdf` в каталоге carafe; он помнит игры каждой папки, так что игры с отключённого диска видны как недоступные.
+
+```bash
+carafe library add /Volumes/SSD/Games      # папку можно создать, но только на подключённом диске
+carafe library default /Volumes/SSD/Games  # сюда ставятся новые игры
+carafe library list                        # место на дисках
+carafe library du                          # место по играм
+carafe game install <appid> [логин] [--to /Volumes/SSD/Games]
+carafe game move <appid> /Volumes/SSD/Games   # тот же том — rename, иначе копия, потом удаление
+carafe downloads                           # очередь: pause|resume|cancel|top <appid>, run
+```
+
+Установка идёт через очередь (`downloads.vdf`): по одной загрузке, порядок меняется, прерванная докачивается после перезапуска. Очередь обрабатывает один процесс — CLI или GUI; управлять ей можно из любого.
+
+## Вход в Steam по QR (Rust-версия)
+
+```bash
+steam/build.sh                 # хелпер carafe-steam на SteamKit2, нужен .NET SDK из steam/global.json
+carafe login                   # QR в терминале: Steam на телефоне → Steam Guard → значок QR
+carafe game owned              # все купленные игры, установленные отмечены
+carafe game install <appid>    # без логина steamcmd: качает carafe-steam с этого аккаунта
+carafe logout                  # отозвать вход в Steam и стереть токен
+```
+
+Пароль Steam carafe не спрашивает и не видит: вход подтверждается в мобильном приложении. Refresh token лежит в Связке ключей macOS (`dev.usertrv.carafe.steam`), хелпер получает его только через stdin. Протокол хелпера — `steam/PROTOCOL.md`.
+
+> **Риск.** `carafe-steam` — сторонний клиент Steam на [SteamKit2](https://github.com/SteamRE/SteamKit). Valve такие клиенты терпит, но официально не поддерживает.
+
 ## Мост в Steam для Mac
 
 ```bash
@@ -88,4 +118,9 @@ bin/carafe cloud push <appid>
 | `CARAFE_ENGINE_DIR` | свой движок, например `dist/soju-engine` из soju |
 | `CARAFE_SOJU`   | checkout soju (по умолчанию `../soju`)      |
 | `CARAFE_HOME`   | где всё хранится                            |
+| `CARAFE_STEAM_HELPER` | свой `carafe-steam` (по умолчанию `steam/dist/<rid>/` рядом с carafe) |
 | `WINEDEBUG`     | логи Wine (по умолчанию выключены)          |
+
+## Лицензия
+
+MIT — см. [LICENSE](LICENSE). Сторонние части (движок soju, Steamworks SDK, D3DMetal) и их лицензии — в [NOTICE.md](NOTICE.md).

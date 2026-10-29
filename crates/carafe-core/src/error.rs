@@ -44,6 +44,54 @@ pub enum Error {
     #[error("в префиксе нет пользователя")]
     NoPrefixUser,
 
+    #[error("нет хелпера carafe-steam: собери steam/build.sh (или задай CARAFE_STEAM_HELPER)")]
+    SteamHelperMissing,
+    #[error("не вошёл в Steam: carafe login")]
+    NotLoggedIn,
+    #[error("вход в Steam больше не действует — войди заново: carafe login")]
+    TokenExpired,
+    /// Ошибка из ответа хелпера: код протокола (`network`, `not_owned`…) и текст.
+    #[error("Steam: {message}")]
+    Steam { code: String, message: String },
+    #[error("carafe-steam: {0}")]
+    SteamProtocol(String),
+    #[error("Связка ключей: {0}")]
+    Keychain(String),
+    #[error("игра {0} не установлена")]
+    NotInstalled(u32),
+    #[error("{} — не папка библиотеки (carafe library list)", .0.display())]
+    NotALibrary(PathBuf),
+    #[error("{} уже в библиотеках", .0.display())]
+    LibraryExists(PathBuf),
+    #[error("пересекается с библиотекой {}", .0.display())]
+    LibraryNested(PathBuf),
+    #[error("встроенную библиотеку убрать нельзя")]
+    LibraryBuiltin,
+    #[error("в {} есть игры — сначала перенеси их", .0.display())]
+    LibraryNotEmpty(PathBuf),
+    #[error("библиотека недоступна (диск отключён?): {}", .0.display())]
+    LibraryUnavailable(PathBuf),
+    #[error("игра {appid} уже установлена в {}", .lib.display())]
+    InstalledElsewhere { appid: u32, lib: PathBuf },
+    #[error("игра уже в {}", .0.display())]
+    AlreadyThere(PathBuf),
+    #[error("уже есть {}", .0.display())]
+    TargetExists(PathBuf),
+    #[error("мало места: нужно {}, свободно {}", crate::fsutil::human_bytes(*.need), crate::fsutil::human_bytes(*.free))]
+    NoSpace { need: u64, free: u64 },
+    #[error("прервано")]
+    Interrupted,
+    #[error("{0} уже в очереди загрузок")]
+    AlreadyQueued(u32),
+    #[error("{0} нет в очереди загрузок")]
+    NotQueued(u32),
+    #[error("очередь загрузок уже обрабатывает другой процесс carafe")]
+    QueueBusy,
+    #[error("steamcmd: {0}")]
+    SteamCmd(String),
+    #[error("нужен вход в steamcmd: carafe steam login USER")]
+    NoSteamLogin,
+
     #[error(transparent)]
     Vdf(#[from] VdfError),
     #[error("{}: {source}", .path.display())]

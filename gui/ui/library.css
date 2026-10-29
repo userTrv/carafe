@@ -1,0 +1,304 @@
+/* Библиотеки, установка, перенос и загрузки (library.js). */
+
+.nav-count {
+  margin-left: auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--grad);
+  color: #fff;
+  font: 600 11px/18px -apple-system, system-ui, sans-serif;
+  font-style: normal;
+  text-align: center;
+}
+
+@media (max-width: 860px) {
+  .nav-count {
+    position: absolute;
+    top: 4px;
+    right: 6px;
+    min-width: 15px;
+    height: 15px;
+    line-height: 15px;
+    font-size: 10px;
+  }
+}
+
+/* ---------- меню выбора библиотеки ---------- */
+
+.menu {
+  position: fixed;
+  z-index: 50;
+  width: 280px;
+  padding: 6px;
+  border-radius: 14px;
+  background: #1d1d29f5;
+  border: 1px solid var(--line-2);
+  box-shadow: 0 24px 60px -20px #000;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  animation: toast 0.2s var(--ease);
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border-radius: 9px;
+  border: 0;
+  background: none;
+  text-align: left;
+}
+
+.menu-item:hover:not(:disabled) {
+  background: #ffffff10;
+}
+
+.menu-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.menu-item svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  color: var(--text-2);
+}
+
+.menu-item b {
+  font-weight: 600;
+}
+
+.menu-item small {
+  display: block;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.menu-tag {
+  margin-left: 6px;
+  font-style: normal;
+  font-size: 11px;
+  color: var(--ok);
+}
+
+.menu-add {
+  margin-top: 4px;
+  border-top: 1px solid var(--line);
+  border-radius: 0 0 9px 9px;
+  color: var(--text-2);
+}
+
+.menu-empty {
+  padding: 10px;
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+/* ---------- настройки: библиотеки ---------- */
+
+.lib {
+  align-items: flex-start;
+}
+
+.lib-ico {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--panel-2);
+  color: var(--text-2);
+  flex: none;
+}
+
+.lib-ico svg {
+  width: 18px;
+  height: 18px;
+}
+
+.lib-off .lib-ico {
+  color: var(--warn);
+}
+
+.lib-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.lib-tag {
+  height: 20px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
+.lib-path {
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.lib-bar {
+  display: flex;
+  height: 6px;
+  margin: 8px 0 5px;
+  border-radius: 6px;
+  background: #ffffff10;
+  overflow: hidden;
+}
+
+.lib-bar i {
+  display: block;
+  height: 100%;
+}
+
+.lib-bar .g {
+  background: var(--grad);
+}
+
+.lib-bar .o {
+  background: #ffffff26;
+}
+
+.lib-add {
+  margin-top: 10px;
+}
+
+/* ---------- загрузки ---------- */
+
+.dl {
+  max-width: 900px;
+}
+
+#dl-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dl-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+
+.dl-row.active {
+  border-color: var(--line-2);
+  background: var(--panel-2);
+}
+
+.dl-cover {
+  width: 120px;
+  height: 56px;
+  border-radius: 8px;
+  object-fit: cover;
+  background: var(--bg-2);
+  flex: none;
+}
+
+.dl-row.queued .dl-cover,
+.dl-row.paused .dl-cover {
+  opacity: 0.6;
+}
+
+.dl-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.dl-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dl-title b {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dl-title .chip {
+  height: 20px;
+  font-size: 11px;
+}
+
+.dl-lib {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.dl-lib svg {
+  width: 14px;
+  height: 14px;
+}
+
+.dl-bar {
+  margin: 8px 0 6px;
+}
+
+.dl-row.paused .dl-bar i {
+  background: var(--text-3);
+}
+
+.dl-row.failed .dl-bar i {
+  background: var(--bad);
+}
+
+.dl-meta {
+  display: flex;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.dl-err {
+  color: var(--bad);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dl-actions {
+  display: flex;
+  gap: 4px;
+  flex: none;
+}
+
+.dl-actions .btn {
+  width: 32px;
+  padding: 0;
+  justify-content: center;
+}
+
+.dl-actions svg {
+  width: 16px;
+  height: 16px;
+}
+
+@media (max-width: 860px) {
+  .dl-cover {
+    display: none;
+  }
+}

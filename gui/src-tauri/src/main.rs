@@ -5,16 +5,18 @@ mod cli;
 mod mock;
 mod redact;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
+use tauri_plugin_dialog::DialogExt;
 
-use backend::{AppId, Backend, CheckId, Profile, TaskEvent};
+use backend::{AppId, Backend, CheckId, DownloadAction, Profile, TaskEvent};
 
 /// Настройки GUI: профиль запуска и путь к checkout carafe для `CliBackend`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -29,6 +31,8 @@ struct App {
     settings: Mutex<Settings>,
     settings_path: PathBuf,
     busy: Mutex<HashSet<String>>,
+    /// Флаги отмены задач, которые её поддерживают (перенос игры).
+    cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
 }
 
 impl App {
@@ -166,7 +170,12 @@ fn spawn_task(
         let h = handle.clone();
         let t = task.clone();
         let sink = move |e: TaskEvent| {
-            let _ = h.emit("task", json!({ "task": t, "event": clean(e) }));
+            let event = match e {
+                // URL входа в окно не уходит — только картинка.
+                TaskEvent::Qr { url } => json!({ "kind": "qr", "svg": qr_svg(&url) }),
+                e => clean(e),
+            };
+            let _ = h.emit("task", json!({ "task": t, "event": event }));
         };
         let res = work(b.as_ref(), &p, &sink);
         handle
@@ -209,8 +218,169 @@ fn fix(handle: AppHandle, app: State<'_, App>, check: CheckId) -> Result<(), Str
     })
 }
 
+#[tauri::command]
+async fn libraries(app: State<'_, App>) -> Result<Value, String> {
+    let b = app.backend();
+    blocking(move || b.libraries()).await.map(clean)
+}
+
+/// Системный диалог выбора папки. Зовётся из Rust — JS-доступ к плагину не открываем.
+#[tauri::command]
+async fn pick_folder(handle: AppHandle) -> Result<Option<String>, String> {
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        handle
+            .dialog()
+            .file()
+            .set_title("Папка библиотеки")
+            .set_can_create_directories(true)
+            .blocking_pick_folder()
+    })
+    .await
+    .map_err(err)?;
+    Ok(picked
+        .and_then(|p| p.into_path().ok())
+        .map(|p| p.display().to_string()))
+}
+
+#[tauri::command]
+async fn library_action(app: State<'_, App>, action: String, path: String) -> Result<(), String> {
+    let b = app.backend();
+    blocking(move || {
+        let p = PathBuf::from(&path);
+        match action.as_str() {
+            "add" => b.add_library(&p),
+            "remove" => b.remove_library(&p),
+            "default" => b.set_default_library(&p),
+            _ => Err(backend::BackendError::new("неизвестное действие")),
+        }
+    })
+    .await
+}
+
+#[tauri::command]
+async fn install(app: State<'_, App>, appid: AppId, library: Option<String>) -> Result<(), String> {
+    let b = app.backend();
+    blocking(move || b.install(appid, library.as_deref().map(std::path::Path::new))).await
+}
+
+#[tauri::command]
+fn move_game(
+    handle: AppHandle,
+    app: State<'_, App>,
+    appid: AppId,
+    library: String,
+) -> Result<(), String> {
+    let task = format!("move:{appid}");
+    let cancel = Arc::new(AtomicBool::new(false));
+    app.cancels
+        .lock()
+        .expect("cancels")
+        .insert(task.clone(), cancel.clone());
+    let h = handle.clone();
+    let t = task.clone();
+    let r = spawn_task(handle, &app, task.clone(), move |b, _, ev| {
+        let r = b
+            .move_game(appid, std::path::Path::new(&library), &cancel, ev)
+            .map(|_| 0);
+        h.state::<App>().cancels.lock().expect("cancels").remove(&t);
+        r
+    });
+    if r.is_err() {
+        app.cancels.lock().expect("cancels").remove(&task);
+    }
+    r
+}
+
+#[tauri::command]
+fn cancel_task(app: State<'_, App>, task: String) {
+    if let Some(c) = app.cancels.lock().expect("cancels").get(&task) {
+        c.store(true, Ordering::Relaxed);
+    }
+}
+
+#[tauri::command]
+async fn downloads(app: State<'_, App>) -> Result<Value, String> {
+    let b = app.backend();
+    blocking(move || b.downloads()).await.map(clean)
+}
+
+#[tauri::command]
+async fn download_action(
+    app: State<'_, App>,
+    appid: AppId,
+    action: DownloadAction,
+) -> Result<(), String> {
+    let b = app.backend();
+    blocking(move || b.download_action(appid, action)).await
+}
+
+/// QR в SVG: тёмные модули на белом с полями — так его читает камера приложения Steam.
+fn qr_svg(url: &str) -> Value {
+    use qrcode::render::svg;
+    match qrcode::QrCode::new(url.as_bytes()) {
+        Ok(code) => code
+            .render::<svg::Color<'_>>()
+            .min_dimensions(240, 240)
+            .dark_color(svg::Color("#0b0b10"))
+            .light_color(svg::Color("#ffffff"))
+            .build()
+            .into(),
+        Err(_) => Value::Null,
+    }
+}
+
+#[tauri::command]
+async fn steam_account(app: State<'_, App>) -> Result<Value, String> {
+    let b = app.backend();
+    blocking(move || b.steam_account()).await.map(clean)
+}
+
+/// Вход по QR — задача `login`: события `qr` с SVG, итог — `task-end`. Отмена —
+/// `cancel_task("login")`.
+#[tauri::command]
+fn steam_login(handle: AppHandle, app: State<'_, App>) -> Result<(), String> {
+    let task = "login".to_string();
+    let cancel = Arc::new(AtomicBool::new(false));
+    app.cancels
+        .lock()
+        .expect("cancels")
+        .insert(task.clone(), cancel.clone());
+    let h = handle.clone();
+    let r = spawn_task(handle, &app, task.clone(), move |b, _, ev| {
+        // Отмена — не ошибка: окно просто закрывает QR (код 1 вместо тоста).
+        let r = match b.steam_login(&cancel, ev) {
+            Ok(_) => Ok(0),
+            Err(_) if cancel.load(Ordering::Relaxed) => Ok(1),
+            Err(e) => Err(e),
+        };
+        h.state::<App>()
+            .cancels
+            .lock()
+            .expect("cancels")
+            .remove("login");
+        r
+    });
+    if r.is_err() {
+        app.cancels.lock().expect("cancels").remove(&task);
+    }
+    r
+}
+
+#[tauri::command]
+async fn steam_logout(app: State<'_, App>) -> Result<(), String> {
+    let b = app.backend();
+    blocking(move || b.steam_logout()).await
+}
+
+#[tauri::command]
+async fn owned_games(app: State<'_, App>) -> Result<Value, String> {
+    let b = app.backend();
+    blocking(move || b.owned_games()).await.map(clean)
+}
+
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|tauri_app| {
             let path = tauri_app
                 .path()
@@ -227,6 +397,7 @@ fn main() {
                 settings: Mutex::new(settings),
                 settings_path: path,
                 busy: Mutex::new(HashSet::new()),
+                cancels: Mutex::new(HashMap::new()),
             });
             Ok(())
         })
@@ -240,7 +411,25 @@ fn main() {
             launch,
             build_bridge,
             fix,
+            libraries,
+            pick_folder,
+            library_action,
+            install,
+            move_game,
+            cancel_task,
+            downloads,
+            download_action,
+            steam_account,
+            steam_login,
+            steam_logout,
+            owned_games,
         ])
-        .run(tauri::generate_context!())
-        .expect("carafe-gui");
+        .build(tauri::generate_context!())
+        .expect("carafe-gui")
+        .run(|handle, ev| {
+            if let RunEvent::Exit = ev {
+                // Загрузка остановится и продолжится при следующем запуске.
+                handle.state::<App>().backend().shutdown();
+            }
+        });
 }

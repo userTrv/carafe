@@ -3,33 +3,49 @@
 //!
 //! Всё начинается с [`Carafe`]: настройки ([`Config`]) и приёмник сообщений ([`Log`]). CLI
 //! печатает сообщения в stderr, GUI может забирать их себе через [`Carafe::with_logger`].
+//!
+//! Аккаунт Steam ([`account`]) — через хелпер `carafe-steam` на SteamKit2 (`steam/`): вход по QR,
+//! купленные игры, загрузка депо. Токен — в Связке ключей ([`Keychain`]).
 
+pub mod account;
 pub mod appinfo;
 pub mod bridge;
 pub mod cloud;
 pub mod config;
+pub mod download;
 pub mod engine;
 pub mod error;
 mod fsutil;
 pub mod game;
 pub mod launch;
+pub mod library;
 mod process;
+pub mod queue;
 pub mod steam;
+pub mod steamclient;
 pub mod vdf;
 
-use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 
+pub use account::{AutoDownloader, SteamKitDownloader};
+pub use account::{Keychain, MemoryStore, OwnedGame, TokenStore};
 pub use appinfo::{AppInfo, CloudRule};
 pub use bridge::{BridgeState, BridgeTarget};
 pub use cloud::{CloudAction, CloudEntry, CloudMode, CloudReport, CloudSummary};
 pub use config::{Config, parse_appid};
+pub use download::{
+    DownloadEvent, DownloadRequest, DownloadStage, Downloader, MockDownloader, SteamCmdDownloader, StopFlag,
+};
 pub use error::{Error, Result};
+pub use fsutil::human_bytes;
 pub use game::SteamApiDll;
 pub use launch::LaunchEvent;
+pub use library::{DiskSpace, GameLocation, LibraryFolder, LibraryInfo, MoveKind, MoveProgress};
 pub use process::{Log, exit_code};
+pub use queue::{Job, JobKind, JobState, Queue, QueueEvent};
+pub use steamclient::{Account, AppDepots, Credentials, DepotEvent, DownloadResult, LoginEvent, OwnedApp};
 
 pub type Logger = Arc<dyn Fn(Log) + Send + Sync>;
 
@@ -38,6 +54,8 @@ pub type Logger = Arc<dyn Fn(Log) + Send + Sync>;
 pub struct Carafe {
     pub config: Config,
     logger: Logger,
+    /// Где лежит refresh token Steam: по умолчанию Связка ключей.
+    tokens: Arc<dyn TokenStore>,
 }
 
 impl std::fmt::Debug for Carafe {
@@ -61,6 +79,8 @@ pub struct GameInfo {
     /// Имя из appinfo; `None`, пока appinfo не загружен ([`Carafe::app_info`]).
     pub name: Option<String>,
     pub dir: PathBuf,
+    /// Папка библиотеки, где лежит игра.
+    pub library: PathBuf,
     pub exe: Option<PathBuf>,
     pub steam_api: Option<SteamApiDll>,
     pub bridge: BridgeState,
@@ -69,7 +89,7 @@ pub struct GameInfo {
 
 impl Carafe {
     pub fn new(config: Config) -> Carafe {
-        Carafe { config, logger: Arc::new(stderr_logger) }
+        Carafe { config, logger: Arc::new(stderr_logger), tokens: Arc::new(Keychain) }
     }
 
     /// Настройки из переменных `CARAFE_*`.
@@ -79,6 +99,12 @@ impl Carafe {
 
     pub fn with_logger(mut self, f: impl Fn(Log) + Send + Sync + 'static) -> Carafe {
         self.logger = Arc::new(f);
+        self
+    }
+
+    /// Своё хранилище токена Steam вместо Связки ключей (тесты, демо).
+    pub fn with_token_store(mut self, store: Arc<dyn TokenStore>) -> Carafe {
+        self.tokens = store;
         self
     }
 
@@ -92,28 +118,19 @@ impl Carafe {
         process::check(cmd, status)
     }
 
-    /// Установленные игры (папки `games/<appid>`), по APPID. Без сети и Steam: имя и правила
-    /// облака — из кешей, если они уже есть.
+    /// Установленные игры во всех подключённых библиотеках (папки `<библиотека>/<appid>`), по
+    /// APPID. Без сети и Steam: имя и правила облака — из кешей, если они уже есть. Игры с
+    /// отключённых дисков — в [`Carafe::game_locations`].
     pub fn games(&self) -> Result<Vec<GameInfo>> {
-        let games = self.config.games();
-        let mut ids: Vec<u32> = match fs::read_dir(&games) {
-            Ok(rd) => rd
-                .flatten()
-                .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-                .filter_map(|e| e.file_name().to_str()?.parse().ok())
-                .collect(),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => vec![],
-            Err(source) => return Err(Error::Io { path: games, source }),
-        };
-        ids.sort_unstable();
-        ids.into_iter().map(|id| self.game(id)).collect()
+        self.game_locations()?.into_iter().filter(|l| l.available).map(|l| self.game(l.appid)).collect()
     }
 
     pub fn game(&self, appid: u32) -> Result<GameInfo> {
-        let dir = self.config.game_dir(appid);
-        if !dir.is_dir() {
-            return Err(Error::NoSuchDir(dir));
+        let loc = self.locate(appid)?.ok_or_else(|| Error::NoSuchDir(self.config.game_dir(appid)))?;
+        if !loc.available {
+            return Err(Error::LibraryUnavailable(loc.library));
         }
+        let dir = loc.dir;
         let steam_api = game::steam_api_dll(&dir);
         Ok(GameInfo {
             appid,
@@ -123,6 +140,7 @@ impl Carafe {
             cloud: cloud::summary(&dir, self.cached_cloud_rules(appid)),
             steam_api,
             dir,
+            library: loc.library,
         })
     }
 }

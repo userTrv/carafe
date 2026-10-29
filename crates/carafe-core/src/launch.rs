@@ -56,7 +56,7 @@ impl Carafe {
     /// пока игра не отключится от Steam, — лаунчер wine может выйти раньше; затем push.
     /// Без моста облака нет: хелпер облака — часть моста.
     pub fn run_game(&self, appid: u32, args: &[OsString], on_event: &mut dyn FnMut(LaunchEvent)) -> Result<i32> {
-        let dir = self.config.game_dir(appid);
+        let dir = self.installed_dir(appid)?;
         let exe =
             game::find_game_exe(&dir, self.config.exe.as_deref()).ok_or_else(|| Error::ExeNotFound(dir.clone()))?;
         let wine = self.wine()?;
