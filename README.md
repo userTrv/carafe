@@ -26,9 +26,36 @@ bin/carafe game run <appid>
 bin/carafe game import <appid>
 ```
 
+## Мост в Steam для Mac
+
+```bash
+bin/carafe bridge build <appid>
+bin/carafe bridge test <appid>     # сверка с нативным Steam на Spacewar (480)
+```
+
+После этого `game run` подменяет `steam_api64.dll` игры заглушкой, которая передаёт вызовы Steamworks нативному хелперу, а тот говорит с запущенным Steam для Mac от имени игры: ачивки, статистика, лидерборды. Steam для Mac должен быть запущен.
+
+Сам мост — часть движка [soju](https://github.com/userTrv/soju) (`bin/soju-bridge`), там же описано, как он устроен и проверяется. carafe ищет checkout soju рядом с собой (`../soju`) или в `CARAFE_SOJU`. Лог вызовов: `~/Library/Application Support/carafe/bridge-<appid>.log`.
+
+`CARAFE_BRIDGE=0` запускает игру с оригинальной DLL.
+
+## Steam Cloud
+
+```bash
+bin/carafe cloud status <appid>   # что куда поедет
+bin/carafe cloud pull <appid>
+bin/carafe cloud push <appid>
+```
+
+`game run` сам делает `pull` перед запуском и `push` после выхода (`CARAFE_CLOUD=0` — не трогать облако). Steam для Mac Auto-Cloud с Windows-путями не обслуживает, поэтому carafe делает это сам через хелпер моста: правила `ufs` игры берёт из `app_info_print` steamcmd, а с облаком говорит через сервис `Cloud` Steam-клиента (`ISteamUnifiedMessages`) — тот же путь, что у самого клиента, без логина и пароля.
+
+- Что синхронизировано, carafe помнит в `games/<appid>/.carafe-cloud-state`. Изменился один файл — едет в ту сторону. Изменились оба — побеждает более новый.
+- Перед перезаписью проигравшая версия, локальная или облачная, кладётся в `backups/<appid>/<время>/`.
+- Файлы облака, зашифрованные Steam, carafe не загружает и не перезаписывает.
+
 ## Ограничения
 
-Steam внутри префикса не запущен, поэтому `SteamAPI_Init()` у игры не проходит: нет облака и ачивок. Сейвы из Steam Cloud можно забрать вручную со страницы `https://store.steampowered.com/account/remotestorageapp/?appid=<appid>` и положить в папку игры в префиксе (у Unity-игр — `drive_c/users/crossover/AppData/LocalLow/...`). Обратно в облако прогресс сам не уходит.
+Без моста `SteamAPI_Init()` у игры не проходит: нет ни лидербордов, ни ачивок.
 
 `carafe game run` применяет обходы для старого Wine 7.7 из GPTK: подставляет `api-ms-win-core-winrt-robuffer` для IL2CPP и убирает плагин Rewired для Windows.Gaming.Input в `.carafe-disabled/`.
 
@@ -39,4 +66,5 @@ Steam внутри префикса не запущен, поэтому `SteamAP
 | `CARAFE_BOTTLE` | имя префикса Wine (по умолчанию `default`)  |
 | `CARAFE_EXE`    | exe игры, если автоопределение ошиблось     |
 | `CARAFE_HUD=1`  | Metal HUD с FPS                             |
+| `CARAFE_BRIDGE=0` | запуск без моста в Steam                  |
 | `WINEDEBUG`     | логи Wine (по умолчанию выключены)          |
