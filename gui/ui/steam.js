@@ -1,12 +1,12 @@
 "use strict";
 
 /* Аккаунт Steam: вход по QR (carafe-steam), полная библиотека купленных игр.
-   Хуки для app.js: withOwned, loadAccount, renderSteamHead, renderSteamGroup.
+   Хуки для app.js: withOwned, loadAccount, steamLogin, renderSteamGroup.
    QR приходит готовым SVG из Rust — URL входа в окно не попадает. */
 
 S.account = undefined; // undefined — ещё не знаем, null — не вошёл
 S.owned = null;
-S.login = null; // { svg, confirmed }
+S.login = null; // { svg }
 
 /* ---------- данные ---------- */
 
@@ -31,6 +31,12 @@ function withOwned(games) {
   return [...games, ...extra].sort((a, b) => a.name.localeCompare(b.name, "ru"));
 }
 
+// Steam ID приходит маской («••••4242»); в панели — как в макете: 7656…4242.
+function maskedId(a) {
+  const tail = String(a?.steamId || "").replace(/\D/g, "").slice(-4);
+  return tail ? `7656…${tail}` : "";
+}
+
 async function loadAccount() {
   try {
     S.account = await invoke("steam_account");
@@ -38,18 +44,17 @@ async function loadAccount() {
     S.account = null;
   }
   renderAccount();
-  renderSteamHead();
   renderSteamGroup();
   if (S.account) loadOwned();
-  else if (S.owned) {
-    S.owned = null;
+  else {
+    if (S.owned) S.owned = null;
     remerge();
   }
 }
 
 async function loadOwned() {
   S.ownedLoading = true;
-  renderSteamHead();
+  if (S.view === "library") renderLibraryBody();
   try {
     S.owned = await invoke("owned_games");
   } catch (e) {
@@ -61,19 +66,15 @@ async function loadOwned() {
 
 function remerge() {
   if (S.gamesRaw) S.games = withOwned(S.gamesRaw);
-  renderSteamHead();
   renderSteamGroup();
   if (S.view === "library") renderLibraryBody();
-  if (S.view === "game" && $("#chips")) {
-    renderGameChips();
-    renderPlay();
-  }
+  if (S.view === "game") refreshGame();
 }
 
 /* ---------- вход ---------- */
 
 async function steamLogin() {
-  S.login = { svg: null, confirmed: false };
+  S.login = { svg: null };
   renderLogin();
   try {
     await invoke("steam_login");
@@ -103,7 +104,7 @@ async function steamLogout() {
 listen("task", ({ payload: { task: name, event } }) => {
   if (name !== "login" || !S.login || event.kind !== "qr") return;
   S.login.svg = event.svg;
-  renderLogin();
+  renderQr();
 });
 
 listen("task-end", ({ payload }) => {
@@ -119,32 +120,66 @@ listen("task-end", ({ payload }) => {
 
 /* ---------- отрисовка ---------- */
 
+const LOGIN_STEPS = ["Откройте Steam на телефоне", "Steam Guard, значок сканера", "Наведите камеру на код"];
+
 function renderLogin() {
   let el = $("#login");
   if (!S.login) {
-    el?.remove();
+    if (el) {
+      el.remove();
+      renderLogin.opener?.focus();
+    }
     return;
   }
-  if (!el) {
-    el = document.createElement("div");
-    el.id = "login";
-    el.className = "login-back";
-    el.addEventListener("click", (e) => {
-      if (e.target === el || e.target.closest("[data-login-cancel]")) cancelLogin();
-    });
-    document.body.append(el);
-  }
+  if (el) return renderQr();
+  renderLogin.opener = document.activeElement;
+  el = document.createElement("div");
+  el.id = "login";
+  el.className = "login-back";
+  el.addEventListener("click", (e) => {
+    if (e.target === el || e.target.closest("[data-login-cancel]")) cancelLogin();
+  });
   el.innerHTML = `
-    <div class="login-card" role="dialog" aria-label="Вход через Steam">
-      <div class="login-title">${I.steam}Вход через Steam</div>
-      <div class="qr">${S.login.svg || '<span class="spin"></span>'}</div>
-      <div class="login-hint">Steam на телефоне → Steam Guard → значок QR</div>
-      <button class="btn btn-ghost" data-login-cancel>Отмена</button>
+    <div class="login-card" role="dialog" aria-modal="true" aria-labelledby="login-title" tabindex="-1">
+      <div class="qr" id="qr"></div>
+      <div class="login-side">
+        <header>
+          <span class="caption">STEAM GUARD</span>
+          <h1 class="display" id="login-title">Войти через Steam</h1>
+        </header>
+        <ol class="steps">${LOGIN_STEPS.map((t, i) => `<li><span class="n">${i + 1}</span>${t}</li>`).join("")}</ol>
+        <div class="login-wait"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Жду подтверждения</span></div>
+        <div class="login-foot"><span>Пароль не нужен</span><button class="btn btn-sm btn-quiet" data-login-cancel>Без входа</button></div>
+      </div>
+      <button class="icon-btn close" data-login-cancel aria-label="Закрыть">${I.x}</button>
     </div>`;
+  document.body.append(el);
+  renderQr();
+  // Фокус на само окно: кнопки получают его с Tab, без рамки сразу при открытии.
+  el.querySelector(".login-card").focus();
+}
+
+function renderQr() {
+  const el = $("#qr");
+  if (!el) return;
+  el.innerHTML = S.login?.svg
+    ? `<div role="img" aria-label="QR-код для входа в Steam">${S.login.svg}</div>`
+    : `<div class="qr-wait" aria-label="Готовлю QR-код"></div>`;
+  const svg = el.querySelector("svg");
+  if (svg) svg.setAttribute("aria-hidden", "true");
 }
 
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && S.login) cancelLogin();
+  // Фокус не уходит из окна входа.
+  if (e.key === "Tab" && S.login) {
+    const items = [...document.querySelectorAll("#login button")];
+    if (!items.length) return;
+    const i = items.indexOf(document.activeElement);
+    const next = e.shiftKey ? (i <= 0 ? items.length - 1 : i - 1) : (i + 1) % items.length;
+    e.preventDefault();
+    items[next].focus();
+  }
 });
 
 function renderAccount() {
@@ -152,38 +187,32 @@ function renderAccount() {
   if (!el) return;
   if (S.account === undefined) return void (el.innerHTML = "");
   if (!S.account) {
-    el.innerHTML = `<button class="btn btn-sm steam-btn" id="side-login">${I.steam}Войти через Steam</button>`;
-    $("#side-login").onclick = steamLogin;
+    el.innerHTML = `<button class="tab" id="nav-login">${I.steam}Войти</button>`;
+    $("#nav-login").onclick = steamLogin;
     return;
   }
   const n = S.account.accountName;
-  el.innerHTML = `<button class="account" id="side-account" title="Аккаунт Steam">
-    <span class="account-ava">${esc(n.slice(0, 1).toUpperCase())}</span><span class="account-name">${esc(n)}</span></button>`;
-  $("#side-account").onclick = () => go("settings");
-}
-
-function renderSteamHead() {
-  const el = $("#steam-head");
-  if (!el) return;
-  if (S.account === null) {
-    el.innerHTML = `<button class="btn btn-sm steam-btn" id="head-login">${I.steam}Войти через Steam</button>`;
-    $("#head-login").onclick = steamLogin;
-  } else if (S.ownedLoading) {
-    el.innerHTML = `<span class="chip chip-quiet"><span class="spin" style="width:12px;height:12px"></span>Библиотека Steam</span>`;
-  } else el.innerHTML = "";
+  el.innerHTML = `<button class="account" id="nav-account" aria-label="Аккаунт Steam: ${esc(n)}">
+    <span class="ava" aria-hidden="true">${esc(n.slice(0, 1).toUpperCase())}</span><span class="account-id">${esc(maskedId(S.account) || n)}</span></button>`;
+  $("#nav-account").onclick = () => go("settings");
 }
 
 function renderSteamGroup() {
   const el = $("#steam-group");
   if (!el) return;
   const a = S.account;
-  const owned = S.owned ? `${S.owned.length} игр в библиотеке` : "";
+  const sub = a ? [maskedId(a), S.owned && `${S.owned.length} игр`].filter(Boolean).join(" · ") : "";
   el.innerHTML = `
     <h2>Steam</h2>
-    <div class="field"><div class="field-label">${a ? esc(a.accountName) : "Не вошёл"}
-      ${a ? `<div class="field-sub">${esc([a.steamId && `Steam ID ${a.steamId}`, owned].filter(Boolean).join(" · "))}</div>` : ""}</div>
-      ${a ? `<button class="btn btn-sm" id="steam-logout">Выйти</button>` : `<button class="btn btn-sm steam-btn" id="steam-login">${I.steam}Войти через Steam</button>`}
-    </div>`;
+    <div class="rows"><div class="row">
+      ${a ? `<span class="ava" aria-hidden="true">${esc(a.accountName.slice(0, 1).toUpperCase())}</span>` : ""}
+      <div class="row-label">${a ? esc(a.accountName) : "Не вошёл"}${sub ? `<span class="row-sub">${esc(sub)}</span>` : ""}</div>
+      ${
+        a
+          ? `<button class="btn btn-sm" id="steam-logout">${I.signOut}Выйти</button>`
+          : `<button class="btn btn-sm btn-primary" id="steam-login">${I.steam}Войти через Steam</button>`
+      }
+    </div></div>`;
   const out = $("#steam-logout");
   if (out) out.onclick = steamLogout;
   const inn = $("#steam-login");

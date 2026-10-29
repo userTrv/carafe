@@ -9,39 +9,36 @@
     <link rel="stylesheet" href="steam.css" />
   </head>
   <body>
-    <div class="drag" data-tauri-drag-region></div>
-    <aside class="side">
-      <div class="brand" data-tauri-drag-region>
-        <span class="brand-mark" aria-hidden="true"></span>
-        <span class="brand-name">carafe</span>
-      </div>
-      <nav class="nav">
-        <button class="nav-item" data-view="library">
-          <svg viewBox="0 0 24 24"><path d="M4 4h6v7H4zM14 4h6v4h-6zM14 12h6v8h-6zM4 15h6v5H4z" /></svg>
-          <span>Библиотека</span>
+    <main class="main" id="main" tabindex="-1"></main>
+    <div class="topbar" data-tauri-drag-region>
+      <nav class="nav" aria-label="Разделы">
+        <span class="brand">
+          <svg viewBox="0 0 100 100" aria-hidden="true">
+            <defs><clipPath id="nav-mark"><path d="M40 10 C42 13 44 16 44 22 V32 C30 40 21 54 21 70 C21 82 28 89 38 89 H62 C72 89 79 82 79 70 C79 54 70 40 56 32 V22 C56 16 58 13 60 10 Z" /></clipPath></defs>
+            <g clip-path="url(#nav-mark)"><path d="M0 64 Q25 57 50 64 T100 64 V100 H0 Z" fill="#E8B04B" /></g>
+            <path d="M40 10 C42 13 44 16 44 22 V32 C30 40 21 54 21 70 C21 82 28 89 38 89 H62 C72 89 79 82 79 70 C79 54 70 40 56 32 V22 C56 16 58 13 60 10" fill="none" stroke="#F2F2F2" stroke-width="8" stroke-linejoin="round" stroke-linecap="round" />
+          </svg>
+          <span class="brand-name">carafe</span>
+        </span>
+        <button class="tab" data-view="library">Библиотека</button>
+        <button class="tab" data-view="downloads">
+          Загрузки
+          <span class="meter" id="dl-meter" hidden><i></i></span>
+          <span class="tab-count" id="dl-count" hidden></span>
         </button>
-        <button class="nav-item" data-view="downloads">
-          <svg viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 19h14" /></svg>
-          <span>Загрузки</span>
-          <i class="nav-count" id="dl-count" hidden></i>
+        <button class="tab" data-view="setup">
+          Окружение
+          <span class="tab-count" id="env-count" hidden></span>
         </button>
-        <button class="nav-item" data-view="setup">
-          <svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V7z" /></svg>
-          <span>Окружение</span>
-          <i class="nav-dot" id="env-dot" hidden></i>
-        </button>
-        <button class="nav-item" data-view="settings">
-          <svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8" /><circle cx="16" cy="7" r="2" /><circle cx="10" cy="17" r="2" /></svg>
-          <span>Настройки</span>
-        </button>
+        <button class="tab" data-view="settings">Настройки</button>
+        <span class="nav-sep" aria-hidden="true"></span>
+        <input class="nav-search" id="q" type="search" placeholder="Поиск" aria-label="Поиск по библиотеке" spellcheck="false" autocomplete="off" hidden />
+        <button class="tab" id="search-btn" aria-label="Поиск"></button>
+        <span id="account"></span>
       </nav>
-      <div class="side-foot">
-        <div id="account"></div>
-        <span class="chip chip-quiet" id="backend-label"></span>
-      </div>
-    </aside>
-    <main class="main" id="main"></main>
-    <div class="toasts" id="toasts"></div>
+    </div>
+    <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+    <script src="icons.js"></script>
     <script src="app.js"></script>
     <script src="library.js"></script>
     <script src="steam.js"></script>
