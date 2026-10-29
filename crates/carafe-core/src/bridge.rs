@@ -53,7 +53,7 @@ impl Carafe {
         match target {
             BridgeTarget::Dll(p) => Ok(p.clone()),
             BridgeTarget::App(appid) => {
-                game::steam_api_dll(&self.config.game_dir(*appid)).map(|s| s.original).ok_or(Error::NoBridgeNeeded)
+                game::steam_api_dll(&self.game_dir(*appid)).map(|s| s.original).ok_or(Error::NoBridgeNeeded)
             }
         }
     }

@@ -103,6 +103,55 @@ pub fn remove_all(p: &Path) -> Result<()> {
     }
 }
 
+/// Записать файл целиком: во временный рядом и переименовать — читатель не увидит половину.
+pub fn write_atomic(p: &Path, data: &[u8]) -> Result<()> {
+    let mut tmp = p.as_os_str().to_owned();
+    tmp.push(format!(".tmp-{}", std::process::id()));
+    let tmp = PathBuf::from(tmp);
+    fs::write(&tmp, data).at(&tmp)?;
+    fs::rename(&tmp, p).at(p)
+}
+
+/// Блокировка файлом (`flock`): CLI и GUI — разные процессы. Снимается при закрытии файла.
+#[derive(Debug)]
+pub struct FileLock(#[allow(dead_code)] fs::File);
+
+impl FileLock {
+    /// Ждать, пока блокировка освободится.
+    pub fn new(p: &Path) -> Result<FileLock> {
+        let f = Self::open(p)?;
+        f.lock().at(p)?;
+        Ok(FileLock(f))
+    }
+
+    /// Без ожидания: `None`, если блокировку держит кто-то другой.
+    pub fn try_new(p: &Path) -> Result<Option<FileLock>> {
+        let f = Self::open(p)?;
+        match f.try_lock() {
+            Ok(()) => Ok(Some(FileLock(f))),
+            Err(fs::TryLockError::WouldBlock) => Ok(None),
+            Err(fs::TryLockError::Error(e)) => Err(e).at(p),
+        }
+    }
+
+    fn open(p: &Path) -> Result<fs::File> {
+        fs::OpenOptions::new().create(true).truncate(false).write(true).open(p).at(p)
+    }
+}
+
+/// Байты по-человечески: `1,2 ГБ`, `640 МБ`.
+pub fn human_bytes(b: u64) -> String {
+    const UNITS: [&str; 5] = ["Б", "КБ", "МБ", "ГБ", "ТБ"];
+    let mut v = b as f64;
+    let mut i = 0;
+    while v >= 1000.0 && i < UNITS.len() - 1 {
+        v /= 1000.0;
+        i += 1;
+    }
+    let s = if i == 0 || v >= 10.0 { format!("{v:.0}") } else { format!("{v:.1}").replace('.', ",") };
+    format!("{s} {}", UNITS[i])
+}
+
 #[cfg(test)]
 pub(crate) mod testdir {
     use std::path::{Path, PathBuf};
@@ -170,6 +219,24 @@ mod tests {
             if p.ends_with("a") { Walk::Skip } else { Walk::Continue }
         });
         assert_eq!(seen, ["a", "b", "b/x", "c"].map(PathBuf::from));
+    }
+
+    #[test]
+    fn human() {
+        assert_eq!(human_bytes(512), "512 Б");
+        assert_eq!(human_bytes(1_234_000_000), "1,2 ГБ");
+        assert_eq!(human_bytes(49_000_000_000), "49 ГБ");
+    }
+
+    #[test]
+    fn locks() {
+        let d = TestDir::new();
+        let p = d.path().join("l");
+        let a = FileLock::try_new(&p).unwrap();
+        assert!(a.is_some());
+        assert!(FileLock::try_new(&p).unwrap().is_none());
+        drop(a);
+        assert!(FileLock::try_new(&p).unwrap().is_some());
     }
 
     #[test]
