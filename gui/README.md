@@ -18,7 +18,8 @@ cargo clippy --all-targets -- -D warnings && cargo fmt --check && cargo test
 | `CARAFE_GUI_BACKEND` | `mock` — демо-данные; иначе `CliBackend`, если известен checkout |
 | `CARAFE_CHECKOUT` | checkout carafe с `bin/carafe` (то же — поле «Checkout carafe» в настройках) |
 | `CARAFE_MOCK=fresh` | демо первого запуска: нет движка, бутылки и Steam |
-| `CARAFE_GUI_ROUTE` | открыть экран сразу: `game/<appid>`, `play/<appid>`, `setup`, `settings`, `downloads`; `install/<appid>` и `move/<appid>` — с открытым меню библиотек, `move/<appid>/go` — сразу перенос |
+| `CARAFE_MOCK_STEAM=in` | демо: уже вошёл в Steam, в библиотеке — все купленные игры |
+| `CARAFE_GUI_ROUTE` | открыть экран сразу: `game/<appid>`, `play/<appid>`, `setup`, `settings`, `downloads`; `install/<appid>` и `move/<appid>` — с открытым меню библиотек, `move/<appid>/go` — сразу перенос; `login` — окно входа в Steam |
 | `CARAFE_HOME`, `CARAFE_SOJU` | как у `bin/carafe` |
 
 Настройки лежат в `~/Library/Application Support/dev.usertrv.carafe/settings.json`. Сборка `.app` — `cargo install tauri-cli` и `cargo tauri build`, в этом шаге не настроена.

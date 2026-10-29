@@ -26,4 +26,14 @@
   <ItemGroup>
     <PackageReference Include="SteamKit2" Version="[3.5.0]" />
   </ItemGroup>
+
+  <!-- SteamKit2 — LGPL-2.1: её сборка лежит рядом с бинарником отдельным файлом, а не внутри
+       single-file, чтобы пользователь мог заменить её своей. Остальное — внутри. -->
+  <Target Name="KeepSteamKitOutsideBundle" AfterTargets="ComputeResolvedFilesToPublishList">
+    <ItemGroup>
+      <ResolvedFileToPublish Update="@(ResolvedFileToPublish)" Condition="'%(Filename)%(Extension)' == 'SteamKit2.dll'">
+        <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
 </Project>

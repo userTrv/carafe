@@ -1,0 +1,42 @@
+name: steam
+
+# Хелпер carafe-steam (SteamKit2): сборка single-file под osx-arm64 и osx-x64 строго по
+# packages.lock.json и проверка, что он запускается и говорит по протоколу. Без сети Steam.
+on:
+  push:
+    branches: [main]
+    paths: ["steam/**", ".github/workflows/steam.yml"]
+  pull_request:
+    paths: ["steam/**", ".github/workflows/steam.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Версия SDK — из steam/global.json.
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: steam/global.json
+
+      - name: build
+        run: steam/build.sh osx-arm64 osx-x64
+
+      - name: smoke
+        # Закрытый stdin: хелпер должен прислать ready с протоколом 1 и выйти с кодом 0.
+        run: |
+          out=$(steam/dist/osx-arm64/carafe-steam < /dev/null)
+          echo "$out"
+          [[ "$out" == *'"event":"ready","protocol":1'* ]]
+          # С аргументами хелпер не работает (токен — только через stdin).
+          if steam/dist/osx-arm64/carafe-steam --token x < /dev/null; then exit 1; fi
+          ls -la steam/dist/osx-arm64 steam/dist/osx-x64

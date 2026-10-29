@@ -21,6 +21,8 @@ for rid in "${rids[@]}"; do
   echo "==> carafe-steam $rid" >&2
   "$DOTNET" publish carafe-steam.csproj -c Release -r "$rid" --no-restore -o "dist/$rid"
   # Рядом с бинарником .NET кладёт pdb/xml — они не нужны (отладка встроена в сборку).
-  find "dist/$rid" -type f ! -name carafe-steam -delete
-  echo "dist/$rid/carafe-steam"
+  # SteamKit2.dll остаётся отдельным файлом: LGPL, пользователь может заменить её своей.
+  find "dist/$rid" -type f ! -name carafe-steam ! -name SteamKit2.dll -delete
+  [[ -f "dist/$rid/SteamKit2.dll" ]] || { echo "build.sh: SteamKit2.dll попала внутрь бандла" >&2; exit 1; }
+  echo "dist/$rid/carafe-steam (+ SteamKit2.dll рядом)"
 done

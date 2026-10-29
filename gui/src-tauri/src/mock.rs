@@ -78,7 +78,10 @@ const OWNED_EXTRA: &[(AppId, &str, f64, bool)] = &[
     (1, "Только для Mac (демо)", 0.0, false),
 ];
 
-const MOCK_QR: [&str; 2] = ["https://s.team/q/1/0000000000000000001", "https://s.team/q/1/0000000000000000002"];
+const MOCK_QR: [&str; 2] = [
+    "https://s.team/q/1/0000000000000000001",
+    "https://s.team/q/1/0000000000000000002",
+];
 
 impl State {
     /// После входа: купленные, но не установленные игры — в библиотеку.
@@ -106,12 +109,21 @@ impl State {
     }
 
     fn used_gb(&self, lib: usize) -> f64 {
-        self.games.iter().filter(|g| g.installed && g.library == lib).map(|g| g.size_gb).sum()
+        self.games
+            .iter()
+            .filter(|g| g.installed && g.library == lib)
+            .map(|g| g.size_gb)
+            .sum()
     }
 
     fn free_bytes(&self, lib: usize) -> u64 {
         let l = &self.libraries[lib];
-        let reserved: f64 = self.jobs.iter().filter(|j| j.library == lib).map(|j| j.done as f64 / 1e9).sum();
+        let reserved: f64 = self
+            .jobs
+            .iter()
+            .filter(|j| j.library == lib)
+            .map(|j| j.done as f64 / 1e9)
+            .sum();
         ((l.total_gb - l.other_gb - self.used_gb(lib) - reserved).max(0.0) * 1e9) as u64
     }
 
@@ -164,7 +176,10 @@ impl MockBackend {
                 bridge: BridgeState::NotBuilt,
                 cloud: CloudState::Never,
                 last_sync_ago: None,
-                files: &[("Profile1.sav", Download, false), ("Profile1_Temp.sav", Download, false)],
+                files: &[
+                    ("Profile1.sav", Download, false),
+                    ("Profile1_Temp.sav", Download, false),
+                ],
             },
             MockGame {
                 appid: 2379780,
@@ -258,9 +273,30 @@ impl MockBackend {
             other_gb,
         };
         let libraries = vec![
-            lib(format!("{home}/Library/Application Support/carafe/games"), "Встроенная", true, true, 494.0, 402.0),
-            lib("/Volumes/Samsung T7/Games".into(), "Samsung T7", false, true, 1000.0, 212.0),
-            lib("/Volumes/Archive/carafe".into(), "Archive", false, false, 2000.0, 0.0),
+            lib(
+                format!("{home}/Library/Application Support/carafe/games"),
+                "Встроенная",
+                true,
+                true,
+                494.0,
+                402.0,
+            ),
+            lib(
+                "/Volumes/Samsung T7/Games".into(),
+                "Samsung T7",
+                false,
+                true,
+                1000.0,
+                212.0,
+            ),
+            lib(
+                "/Volumes/Archive/carafe".into(),
+                "Archive",
+                false,
+                false,
+                2000.0,
+                0.0,
+            ),
         ];
         let jobs = if fresh {
             Vec::new()
@@ -329,7 +365,10 @@ impl Default for MockBackend {
 }
 
 fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn wait(ms: u64) {
@@ -352,7 +391,12 @@ impl Backend for MockBackend {
     fn environment(&self, _profile: &Profile) -> Result<Environment> {
         wait(250);
         let st = self.state.lock().expect("mock state");
-        let check = |id, ok, fixable| Check { id, ok, fixable, hint: None };
+        let check = |id, ok, fixable| Check {
+            id,
+            ok,
+            fixable,
+            hint: None,
+        };
         Ok(Environment {
             checks: vec![
                 check(CheckId::Rosetta, true, false),
@@ -363,8 +407,16 @@ impl Backend for MockBackend {
                 check(CheckId::Steam, st.steam, true),
             ],
             engines: vec![
-                EngineInfo { id: "gptk-3.0-3".into(), name: "GPTK 3.0-3".into(), d3dmetal: true },
-                EngineInfo { id: "soju-engine".into(), name: "soju · Wine 11.0".into(), d3dmetal: true },
+                EngineInfo {
+                    id: "gptk-3.0-3".into(),
+                    name: "GPTK 3.0-3".into(),
+                    d3dmetal: true,
+                },
+                EngineInfo {
+                    id: "soju-engine".into(),
+                    name: "soju · Wine 11.0".into(),
+                    d3dmetal: true,
+                },
             ],
             bottles: vec!["default".into(), "soju-test".into()],
         })
@@ -386,7 +438,10 @@ impl Backend for MockBackend {
                 library: g.installed.then(|| st.libraries[g.library].path.clone()),
                 available: !g.installed || st.libraries[g.library].available,
                 bridge: g.bridge,
-                cloud: CloudSummary { state: g.cloud, last_sync: g.last_sync_ago.map(|a| t - a) },
+                cloud: CloudSummary {
+                    state: g.cloud,
+                    last_sync: g.last_sync_ago.map(|a| t - a),
+                },
             })
             .collect())
     }
@@ -401,19 +456,31 @@ impl Backend for MockBackend {
             files: g
                 .files
                 .iter()
-                .map(|&(name, action, conflict)| CloudFile { name: name.into(), action, conflict })
+                .map(|&(name, action, conflict)| CloudFile {
+                    name: name.into(),
+                    action,
+                    conflict,
+                })
                 .collect(),
             last_sync: g.last_sync_ago.map(|a| t - a),
-            note: g.files.is_empty().then(|| "у игры нет Steam Cloud".to_string()),
+            note: g
+                .files
+                .is_empty()
+                .then(|| "у игры нет Steam Cloud".to_string()),
         })
     }
 
     fn launch(&self, appid: AppId, profile: &Profile, events: Events) -> Result<i32> {
         {
             let st = self.lock();
-            let g = st.game(appid).ok_or_else(|| BackendError::new("нет игры"))?;
+            let g = st
+                .game(appid)
+                .ok_or_else(|| BackendError::new("нет игры"))?;
             if !st.libraries[g.library].available {
-                return Err(BackendError::new(format!("библиотека недоступна: {}", st.libraries[g.library].path)));
+                return Err(BackendError::new(format!(
+                    "библиотека недоступна: {}",
+                    st.libraries[g.library].path
+                )));
             }
         }
         let (name, files, bridge) = self.with_game(appid, |g| (g.name, g.files, g.bridge))?;
@@ -428,7 +495,13 @@ impl Backend for MockBackend {
             wait(900);
             for &(f, action, conflict) in files {
                 if action == CloudAction::Download {
-                    events(TaskEvent::CloudFile { file: CloudFile { name: f.into(), action, conflict } });
+                    events(TaskEvent::CloudFile {
+                        file: CloudFile {
+                            name: f.into(),
+                            action,
+                            conflict,
+                        },
+                    });
                     log(events, format!("  ↓ {f}"));
                     wait(250);
                 }
@@ -464,7 +537,13 @@ impl Backend for MockBackend {
             wait(800);
             for &(f, action, conflict) in files {
                 if action == CloudAction::Upload {
-                    events(TaskEvent::CloudFile { file: CloudFile { name: f.into(), action, conflict } });
+                    events(TaskEvent::CloudFile {
+                        file: CloudFile {
+                            name: f.into(),
+                            action,
+                            conflict,
+                        },
+                    });
                     log(events, format!("  ↑ {f}"));
                     wait(250);
                 }
@@ -501,7 +580,10 @@ impl Backend for MockBackend {
         stage(events, Stage::Download, StageStatus::Active);
         for i in 1..=20 {
             wait(120);
-            events(TaskEvent::Progress { stage: Stage::Download, fraction: i as f32 / 20.0 });
+            events(TaskEvent::Progress {
+                stage: Stage::Download,
+                fraction: i as f32 / 20.0,
+            });
         }
         stage(events, Stage::Download, StageStatus::Done);
         stage(events, Stage::Unpack, StageStatus::Active);
@@ -541,7 +623,11 @@ impl Backend for MockBackend {
                 total_bytes: l.available.then_some((l.total_gb * 1e9) as u64),
                 free_bytes: l.available.then(|| st.free_bytes(i)),
                 used_bytes: (st.used_gb(i) * 1e9) as u64,
-                games: st.games.iter().filter(|g| g.installed && g.library == i).count() as u32,
+                games: st
+                    .games
+                    .iter()
+                    .filter(|g| g.installed && g.library == i)
+                    .count() as u32,
             })
             .collect())
     }
@@ -552,7 +638,10 @@ impl Backend for MockBackend {
         if st.libraries.iter().any(|l| l.path == p) {
             return Err(BackendError::new(format!("{p} уже в библиотеках")));
         }
-        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.clone());
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| p.clone());
         st.libraries.push(MockLibrary {
             path: p,
             name,
@@ -570,9 +659,12 @@ impl Backend for MockBackend {
         if st.libraries[i].builtin {
             return Err(BackendError::new("встроенную библиотеку убрать нельзя"));
         }
-        let busy = st.games.iter().any(|g| g.installed && g.library == i) || st.jobs.iter().any(|j| j.library == i);
+        let busy = st.games.iter().any(|g| g.installed && g.library == i)
+            || st.jobs.iter().any(|j| j.library == i);
         if busy && st.libraries[i].available {
-            return Err(BackendError::new("в библиотеке есть игры — сначала перенеси их"));
+            return Err(BackendError::new(
+                "в библиотеке есть игры — сначала перенеси их",
+            ));
         }
         st.libraries.remove(i);
         for g in st.games.iter_mut() {
@@ -603,10 +695,10 @@ impl Backend for MockBackend {
     }
 
     fn steam_account(&self) -> Result<Option<SteamAccount>> {
-        Ok(self
-            .lock()
-            .account
-            .map(|a| SteamAccount { account_name: a.into(), steam_id: Some("••••4242".into()) }))
+        Ok(self.lock().account.map(|a| SteamAccount {
+            account_name: a.into(),
+            steam_id: Some("••••4242".into()),
+        }))
     }
 
     fn steam_login(&self, cancel: &AtomicBool, events: Events) -> Result<SteamAccount> {
@@ -623,7 +715,10 @@ impl Backend for MockBackend {
         let mut st = self.lock();
         st.account = Some("tester_mac");
         st.add_owned();
-        Ok(SteamAccount { account_name: "tester_mac".into(), steam_id: Some("••••4242".into()) })
+        Ok(SteamAccount {
+            account_name: "tester_mac".into(),
+            steam_id: Some("••••4242".into()),
+        })
     }
 
     fn steam_logout(&self) -> Result<()> {
@@ -631,7 +726,9 @@ impl Backend for MockBackend {
         let mut st = self.lock();
         st.account = None;
         let queued: Vec<AppId> = st.jobs.iter().map(|j| j.appid).collect();
-        st.games.retain(|g| g.installed || queued.contains(&g.appid) || !OWNED_EXTRA.iter().any(|o| o.0 == g.appid));
+        st.games.retain(|g| {
+            g.installed || queued.contains(&g.appid) || !OWNED_EXTRA.iter().any(|o| o.0 == g.appid)
+        });
         Ok(())
     }
 
@@ -680,18 +777,29 @@ impl Backend for MockBackend {
         if st.jobs.iter().any(|j| j.appid == appid) {
             return Err(BackendError::new("уже в очереди загрузок"));
         }
-        let g = st.game(appid).ok_or_else(|| BackendError::new(format!("нет игры {appid}")))?;
+        let g = st
+            .game(appid)
+            .ok_or_else(|| BackendError::new(format!("нет игры {appid}")))?;
         let (installed, size, glib) = (g.installed, (g.size_gb * 1e9) as u64, g.library);
         if installed && glib != lib {
-            return Err(BackendError::new("игра уже установлена в другой библиотеке"));
+            return Err(BackendError::new(
+                "игра уже установлена в другой библиотеке",
+            ));
         }
         if !installed && size > st.free_bytes(lib) {
-            return Err(BackendError::new(format!("мало места в «{}»", st.libraries[lib].name)));
+            return Err(BackendError::new(format!(
+                "мало места в «{}»",
+                st.libraries[lib].name
+            )));
         }
         st.jobs.push(MockJob {
             appid,
             library: lib,
-            kind: if installed { DownloadKind::Update } else { DownloadKind::Install },
+            kind: if installed {
+                DownloadKind::Update
+            } else {
+                DownloadKind::Install
+            },
             state: DownloadState::Queued,
             stage: DownloadStage::Preparing,
             done: 0,
@@ -701,11 +809,20 @@ impl Backend for MockBackend {
         Ok(())
     }
 
-    fn move_game(&self, appid: AppId, library: &Path, cancel: &AtomicBool, events: Events) -> Result<()> {
+    fn move_game(
+        &self,
+        appid: AppId,
+        library: &Path,
+        cancel: &AtomicBool,
+        events: Events,
+    ) -> Result<()> {
         let (to, size, name) = {
             let st = self.lock();
             let to = st.library_index(library)?;
-            let g = st.game(appid).filter(|g| g.installed).ok_or_else(|| BackendError::new("игра не установлена"))?;
+            let g = st
+                .game(appid)
+                .filter(|g| g.installed)
+                .ok_or_else(|| BackendError::new("игра не установлена"))?;
             if !st.libraries[g.library].available || !st.libraries[to].available {
                 return Err(BackendError::new("библиотека недоступна (диск отключён?)"));
             }
@@ -717,7 +834,10 @@ impl Backend for MockBackend {
             }
             let size = (g.size_gb * 1e9) as u64;
             if size > st.free_bytes(to) {
-                return Err(BackendError::new(format!("мало места в «{}»", st.libraries[to].name)));
+                return Err(BackendError::new(format!(
+                    "мало места в «{}»",
+                    st.libraries[to].name
+                )));
             }
             (to, size, st.libraries[to].name.clone())
         };
@@ -728,11 +848,20 @@ impl Backend for MockBackend {
         let per = ((size as f64 / 1e9 * 60.0) as u64).clamp(20, 200);
         for i in 1..=steps {
             if cancel.load(Ordering::Relaxed) {
-                stage(events, Stage::Move, StageStatus::Failed { message: "отменено".into() });
+                stage(
+                    events,
+                    Stage::Move,
+                    StageStatus::Failed {
+                        message: "отменено".into(),
+                    },
+                );
                 return Err(BackendError::new("перенос отменён — игра на прежнем месте"));
             }
             wait(per);
-            events(TaskEvent::Progress { stage: Stage::Move, fraction: i as f32 / steps as f32 });
+            events(TaskEvent::Progress {
+                stage: Stage::Move,
+                fraction: i as f32 / steps as f32,
+            });
         }
         self.with_game(appid, |g| g.library = to)?;
         stage(events, Stage::Move, StageStatus::Done);
@@ -753,7 +882,10 @@ impl Backend for MockBackend {
                 });
                 Download {
                     appid: j.appid,
-                    name: st.game(j.appid).map(|g| g.name.to_string()).unwrap_or_else(|| format!("App {}", j.appid)),
+                    name: st
+                        .game(j.appid)
+                        .map(|g| g.name.to_string())
+                        .unwrap_or_else(|| format!("App {}", j.appid)),
                     cover: Cover::for_app(j.appid),
                     library: st.libraries[j.library].path.clone(),
                     kind: j.kind,
@@ -771,7 +903,11 @@ impl Backend for MockBackend {
 
     fn download_action(&self, appid: AppId, action: DownloadAction) -> Result<()> {
         let mut st = self.lock();
-        let i = st.jobs.iter().position(|j| j.appid == appid).ok_or_else(|| BackendError::new("нет в очереди"))?;
+        let i = st
+            .jobs
+            .iter()
+            .position(|j| j.appid == appid)
+            .ok_or_else(|| BackendError::new("нет в очереди"))?;
         match action {
             DownloadAction::Pause => st.jobs[i].state = DownloadState::Paused,
             DownloadAction::Resume => {
@@ -803,9 +939,17 @@ fn download_loop(state: std::sync::Weak<Mutex<State>>) {
         let mut st = state.lock().expect("mock state");
         let dt = last.elapsed().as_secs_f64();
         last = Instant::now();
-        let active = match st.jobs.iter().position(|j| j.state == DownloadState::Active) {
+        let active = match st
+            .jobs
+            .iter()
+            .position(|j| j.state == DownloadState::Active)
+        {
             Some(i) => i,
-            None => match st.jobs.iter().position(|j| j.state == DownloadState::Queued) {
+            None => match st
+                .jobs
+                .iter()
+                .position(|j| j.state == DownloadState::Queued)
+            {
                 Some(i) => {
                     let j = &mut st.jobs[i];
                     j.state = DownloadState::Active;

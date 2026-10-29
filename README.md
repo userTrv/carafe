@@ -59,6 +59,20 @@ carafe downloads                           # очередь: pause|resume|cancel
 
 Установка идёт через очередь (`downloads.vdf`): по одной загрузке, порядок меняется, прерванная докачивается после перезапуска. Очередь обрабатывает один процесс — CLI или GUI; управлять ей можно из любого.
 
+## Вход в Steam по QR (Rust-версия)
+
+```bash
+steam/build.sh                 # хелпер carafe-steam на SteamKit2, нужен .NET SDK из steam/global.json
+carafe login                   # QR в терминале: Steam на телефоне → Steam Guard → значок QR
+carafe game owned              # все купленные игры, установленные отмечены
+carafe game install <appid>    # без логина steamcmd: качает carafe-steam с этого аккаунта
+carafe logout                  # отозвать вход в Steam и стереть токен
+```
+
+Пароль Steam carafe не спрашивает и не видит: вход подтверждается в мобильном приложении. Refresh token лежит в Связке ключей macOS (`dev.usertrv.carafe.steam`), хелпер получает его только через stdin. Протокол хелпера — `steam/PROTOCOL.md`.
+
+> **Риск.** `carafe-steam` — сторонний клиент Steam на [SteamKit2](https://github.com/SteamRE/SteamKit). Valve такие клиенты терпит, но официально не поддерживает.
+
 ## Мост в Steam для Mac
 
 ```bash
@@ -104,6 +118,7 @@ bin/carafe cloud push <appid>
 | `CARAFE_ENGINE_DIR` | свой движок, например `dist/soju-engine` из soju |
 | `CARAFE_SOJU`   | checkout soju (по умолчанию `../soju`)      |
 | `CARAFE_HOME`   | где всё хранится                            |
+| `CARAFE_STEAM_HELPER` | свой `carafe-steam` (по умолчанию `steam/dist/<rid>/` рядом с carafe) |
 | `WINEDEBUG`     | логи Wine (по умолчанию выключены)          |
 
 ## Лицензия

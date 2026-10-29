@@ -213,7 +213,13 @@ pub struct Profile {
 
 impl Default for Profile {
     fn default() -> Self {
-        Self { bottle: "default".into(), engine: None, hud: false, bridge: true, cloud: true }
+        Self {
+            bottle: "default".into(),
+            engine: None,
+            hud: false,
+            bridge: true,
+            cloud: true,
+        }
     }
 }
 
@@ -415,7 +421,13 @@ pub trait Backend: Send + Sync {
 
     /// Перенести игру в другую библиотеку. Прогресс — `Progress { stage: Move }`; `cancel` —
     /// остановить, исходник остаётся целым.
-    fn move_game(&self, _appid: AppId, _library: &Path, _cancel: &AtomicBool, _events: Events) -> Result<()> {
+    fn move_game(
+        &self,
+        _appid: AppId,
+        _library: &Path,
+        _cancel: &AtomicBool,
+        _events: Events,
+    ) -> Result<()> {
         unsupported()
     }
 

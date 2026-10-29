@@ -172,8 +172,8 @@ steam/build.sh                    # dist/osx-arm64/carafe-steam
 steam/build.sh osx-arm64 osx-x64  # оба
 ```
 
-Нужен .NET SDK из `global.json`. Single-file, self-contained (рантайм внутри, ~90 МБ), без тримминга: protobuf-net в SteamKit2 работает через рефлексию. Пакеты — только с nuget.org (`nuget.config`), строго по `packages.lock.json` (`--locked-mode`, contentHash).
+Нужен .NET SDK из `global.json`. Single-file, self-contained (рантайм .NET внутри, ~80 МБ), без тримминга: protobuf-net в SteamKit2 работает через рефлексию. Пакеты — только с nuget.org (`nuget.config`), строго по `packages.lock.json` (`--locked-mode`, contentHash).
 
-SteamKit2 распространяется под LGPL-2.1; single-file содержит `SteamKit2.dll` внутри. Заменить её можно, собрав хелпер из этого каталога с другой версией пакета.
+SteamKit2 распространяется под LGPL-2.1, поэтому в бандл она не входит: `dist/<rid>/SteamKit2.dll` лежит рядом с `carafe-steam`, и её можно заменить своей сборкой SteamKit2 (3.x той же или более новой версии) без пересборки хелпера. Переносить хелпер — вместе с этим файлом. Лицензии сторонних частей — `NOTICE.md`.
 
 Ядро ищет хелпер в `CARAFE_STEAM_HELPER`, затем в `steam/dist/<rid>/carafe-steam` рядом с любым из предков бинарника carafe, затем рядом с самим бинарником.
