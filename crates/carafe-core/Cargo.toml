@@ -1,0 +1,14 @@
+[package]
+name = "carafe-core"
+description = "Ядро carafe: движок Wine, бутылки, игры из Steam, мост soju и Steam Cloud"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+sha2 = "0.11"
+thiserror = "2"
+
+[lints]
+workspace = true

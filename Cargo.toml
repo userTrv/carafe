@@ -1,0 +1,19 @@
+[workspace]
+# gui/ (Tauri) добавится сюда отдельным членом.
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+repository = "https://github.com/userTrv/carafe"
+
+[workspace.dependencies]
+carafe-core = { path = "crates/carafe-core" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
