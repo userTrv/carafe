@@ -267,7 +267,7 @@ soju_install() {
     # Недокачанный кусок больше архива — мусор от другой версии, с ним докачка не сойдётся.
     [[ "$(stat -f %z "$tarball.part" 2>/dev/null || echo 0)" -le "$size" ]] || rm -f "$tarball.part"
     log "качаю движок $archive ($((size / 1000000)) МБ)"
-    curl -fL --retry 5 -C - -o "$tarball.part" "$url"
+    curl -fL --retry 5 --speed-limit 4096 --speed-time 60 -C - -o "$tarball.part" "$url"
     mv "$tarball.part" "$tarball"
   fi
   got="$(stat -f %z "$tarball")"
@@ -296,7 +296,7 @@ gptk_install() {
   mkdir -p "$dl"
   if [[ ! -f "$tarball" ]]; then
     log "качаю движок ${GPTK_URL##*/}"
-    curl -fL --retry 5 -C - -o "$tarball.part" "$GPTK_URL"
+    curl -fL --retry 5 --speed-limit 4096 --speed-time 60 -C - -o "$tarball.part" "$GPTK_URL"
     mv "$tarball.part" "$tarball"
   fi
   echo "$GPTK_SHA256  $tarball" | shasum -a 256 -c - >/dev/null || die "sha256 архива не совпал"

@@ -329,7 +329,12 @@ impl Carafe {
             fsutil::remove_all(&part)?;
         }
         self.log(Log::Step(format!("качаю движок {} ({})", m.archive, fsutil::human_bytes(m.size))));
-        process::run_inherit(Command::new("curl").args(["-fL", "--retry", "5", "-C", "-", "-o"]).arg(&part).arg(url))?;
+        process::run_inherit(
+            Command::new("curl")
+                .args(["-fL", "--retry", "5", "--speed-limit", "4096", "--speed-time", "60", "-C", "-", "-o"])
+                .arg(&part)
+                .arg(url),
+        )?;
         fs::rename(&part, &tarball).at(&tarball)?;
         Ok(tarball)
     }

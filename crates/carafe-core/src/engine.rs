@@ -419,7 +419,10 @@ impl Carafe {
             self.log(Log::Step(format!("качаю движок {file}")));
             let part = dl.join(format!("{file}.part"));
             process::run_inherit(
-                Command::new("curl").args(["-fL", "--retry", "5", "-C", "-", "-o"]).arg(&part).arg(GPTK_URL),
+                Command::new("curl")
+                    .args(["-fL", "--retry", "5", "--speed-limit", "4096", "--speed-time", "60", "-C", "-", "-o"])
+                    .arg(&part)
+                    .arg(GPTK_URL),
             )?;
             fs::rename(&part, &tarball).at(&tarball)?;
         }

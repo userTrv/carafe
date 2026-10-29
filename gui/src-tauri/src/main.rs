@@ -18,18 +18,21 @@ use tauri_plugin_dialog::DialogExt;
 
 use backend::{AppId, Backend, CheckId, DownloadAction, EngineKind, Profile, TaskEvent};
 
-/// Настройки GUI: профиль запуска и путь к checkout carafe для `CliBackend`.
+/// Настройки GUI: профиль запуска и пути к checkout carafe и soju для `CliBackend`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct Settings {
     profile: Profile,
     checkout: Option<String>,
+    soju: Option<String>,
 }
 
 struct App {
     backend: RwLock<Arc<dyn Backend>>,
     settings: Mutex<Settings>,
     settings_path: PathBuf,
+    /// `bin/carafe`, вложенный в carafe.app (`Contents/Resources`); в `cargo run` его нет.
+    bundled: Option<PathBuf>,
     busy: Mutex<HashSet<String>>,
     /// Флаги отмены задач, которые её поддерживают (перенос игры).
     cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
@@ -45,16 +48,23 @@ impl App {
     }
 }
 
-/// `CARAFE_GUI_BACKEND=mock|cli`; без неё — CLI, если известен checkout carafe.
-fn pick_backend(settings: &Settings) -> Arc<dyn Backend> {
+/// `CARAFE_GUI_BACKEND=mock|cli`; без неё — CLI: checkout из окружения или настроек, иначе
+/// `bin/carafe` из самого приложения.
+fn pick_backend(settings: &Settings, bundled: Option<&PathBuf>) -> Arc<dyn Backend> {
     let forced = std::env::var("CARAFE_GUI_BACKEND").unwrap_or_default();
     if forced == "mock" {
         return Arc::new(mock::MockBackend::new());
     }
     let checkout = std::env::var("CARAFE_CHECKOUT")
         .ok()
-        .or_else(|| settings.checkout.clone());
-    match checkout.map(|c| cli::CliBackend::new(&expand_home(&c))) {
+        .or_else(|| settings.checkout.clone())
+        .map(|c| expand_home(&c))
+        .or_else(|| bundled.cloned());
+    let soju = std::env::var("CARAFE_SOJU")
+        .ok()
+        .or_else(|| settings.soju.clone())
+        .map(|s| expand_home(&s));
+    match checkout.map(|c| cli::CliBackend::new(&c, soju)) {
         Some(Ok(b)) => Arc::new(b),
         Some(Err(e)) => {
             eprintln!("carafe-gui: {e}; беру демо-данные");
@@ -106,6 +116,7 @@ fn info(app: State<'_, App>) -> Value {
     json!({
         "backend": app.backend().label(),
         "checkout": s.checkout,
+        "bundled": app.bundled.is_some(),
         // Только для разработки: открыть экран сразу (`game/<appid>`, `play/<appid>`, `setup`, `settings`).
         "route": std::env::var("CARAFE_GUI_ROUTE").ok(),
     })
@@ -140,7 +151,7 @@ fn get_settings(app: State<'_, App>) -> Value {
 fn save_settings(app: State<'_, App>, settings: Settings) -> Result<Value, String> {
     let backend_changed = {
         let mut cur = app.settings.lock().expect("settings");
-        let changed = cur.checkout != settings.checkout;
+        let changed = cur.checkout != settings.checkout || cur.soju != settings.soju;
         *cur = settings.clone();
         changed
     };
@@ -150,7 +161,7 @@ fn save_settings(app: State<'_, App>, settings: Settings) -> Result<Value, Strin
     let text = serde_json::to_string_pretty(&settings).map_err(err)?;
     fs::write(&app.settings_path, text).map_err(err)?;
     if backend_changed {
-        *app.backend.write().expect("backend") = pick_backend(&settings);
+        *app.backend.write().expect("backend") = pick_backend(&settings, app.bundled.as_ref());
     }
     Ok(json!({ "backend": app.backend().label() }))
 }
@@ -415,11 +426,17 @@ fn main() {
                 .ok()
                 .and_then(|s| serde_json::from_str(&s).ok())
                 .unwrap_or_default();
-            let backend = pick_backend(&settings);
+            let bundled = tauri_app
+                .path()
+                .resource_dir()
+                .ok()
+                .filter(|d| d.join("bin/carafe").is_file());
+            let backend = pick_backend(&settings, bundled.as_ref());
             tauri_app.manage(App {
                 backend: RwLock::new(backend),
                 settings: Mutex::new(settings),
                 settings_path: path,
+                bundled,
                 busy: Mutex::new(HashSet::new()),
                 cancels: Mutex::new(HashMap::new()),
             });
