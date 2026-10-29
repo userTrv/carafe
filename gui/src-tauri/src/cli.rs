@@ -2,15 +2,22 @@
 //!
 //! Состояние (игры, движки, бутылки, мосты) читается прямо с диска — так же, как его
 //! раскладывает `bin/carafe`. Всё, что требует Steam или Wine, идёт через сам скрипт.
+//!
+//! Библиотеки, перенос игр и очередь загрузок — уже напрямую через carafe-core: у bash-версии
+//! их нет. Очередь обрабатывает поток GUI с загрузчиком steamcmd (нужен сохранённый вход:
+//! `carafe steam login USER`).
 
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
+
+use carafe_core::{Carafe, Config, GameLocation, JobKind, JobState, Queue, SteamCmdDownloader};
 
 use crate::backend::*;
 
@@ -21,6 +28,10 @@ pub struct CliBackend {
     script: PathBuf,
     home: PathBuf,
     soju: PathBuf,
+    core: Carafe,
+    queue: Arc<Queue>,
+    worker: Mutex<Option<thread::JoinHandle<()>>>,
+    shutdown: Arc<AtomicBool>,
 }
 
 impl CliBackend {
@@ -44,7 +55,49 @@ impl CliBackend {
                     .map(|p| p.join("soju"))
                     .unwrap_or_default()
             });
-        Ok(Self { script, home, soju })
+        let mut config = Config::from_env().map_err(core_err)?;
+        config.home = home.clone();
+        let core = Carafe::new(config).with_logger(|_| {});
+        let queue = Arc::new(core.queue());
+        Ok(Self {
+            script,
+            home,
+            soju,
+            core,
+            queue,
+            worker: Mutex::new(None),
+            shutdown: Arc::new(AtomicBool::new(false)),
+        })
+    }
+
+    /// Поток очереди загрузок; запускается при первом обращении к очереди. Пока очередь держит
+    /// другой процесс (`carafe downloads run`), пробует снова раз в несколько секунд.
+    fn ensure_worker(&self) {
+        let mut w = self.worker.lock().expect("worker");
+        if w.is_some() {
+            return;
+        }
+        let (queue, shutdown) = (self.queue.clone(), self.shutdown.clone());
+        let dl = SteamCmdDownloader::new(self.core.clone(), None);
+        *w = Some(thread::spawn(move || {
+            while !shutdown.load(Ordering::Relaxed) {
+                match queue.run_forever(&dl, &shutdown) {
+                    Ok(()) => return,
+                    Err(carafe_core::Error::QueueBusy) => {}
+                    Err(e) => eprintln!("carafe-gui: очередь загрузок: {e}"),
+                }
+                for _ in 0..50 {
+                    if shutdown.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }));
+    }
+
+    fn library_path(&self, loc: &GameLocation) -> String {
+        loc.library.display().to_string()
     }
 
     fn engine_dir(&self, profile: &Profile) -> PathBuf {
@@ -52,10 +105,6 @@ impl CliBackend {
             Some(id) => PathBuf::from(id),
             None => self.home.join("engines").join(DEFAULT_ENGINE),
         }
-    }
-
-    fn game_dir(&self, appid: AppId) -> PathBuf {
-        self.home.join("games").join(appid.to_string())
     }
 
     fn env(&self, profile: &Profile) -> Vec<(&'static str, String)> {
@@ -258,22 +307,39 @@ impl Backend for CliBackend {
 
     fn games(&self, _profile: &Profile) -> Result<Vec<Game>> {
         let mut games = Vec::new();
-        for dir in subdirs(&self.home.join("games")) {
-            let Some(appid) = dir
-                .file_name()
-                .and_then(|n| n.to_str())
-                .and_then(|n| n.parse::<AppId>().ok())
-            else {
+        for loc in self.core.game_locations().map_err(core_err)? {
+            let appid = loc.appid;
+            if !loc.available {
+                // Диск отключён: игра остаётся в списке, запустить её нельзя.
+                games.push(Game {
+                    appid,
+                    name: loc.name.clone().unwrap_or_else(|| format!("App {appid}")),
+                    cover: Cover::for_app(appid),
+                    installed: true,
+                    size_bytes: loc.size,
+                    library: Some(self.library_path(&loc)),
+                    available: false,
+                    bridge: BridgeState::Unknown,
+                    cloud: CloudSummary {
+                        state: CloudState::Unknown,
+                        last_sync: None,
+                    },
+                });
                 continue;
-            };
-            let exe = find_game_exe(&dir);
-            let name = exe
-                .as_ref()
-                .and_then(|e| e.file_stem())
-                .and_then(|s| s.to_str())
-                .map(String::from)
+            }
+            let dir = &loc.dir;
+            let exe = find_game_exe(dir);
+            let name = loc
+                .name
+                .clone()
+                .or_else(|| {
+                    exe.as_ref()
+                        .and_then(|e| e.file_stem())
+                        .and_then(|s| s.to_str())
+                        .map(String::from)
+                })
                 .unwrap_or_else(|| format!("App {appid}"));
-            let bridge = self.bridge_state(&dir);
+            let bridge = self.bridge_state(dir);
             let state_file = dir.join(".carafe-cloud-state");
             let last_sync = mtime(&state_file);
             let rules = fs::read_to_string(dir.join(".carafe-ufs")).ok();
@@ -288,7 +354,9 @@ impl Backend for CliBackend {
                 name,
                 cover: Cover::for_app(appid),
                 installed: exe.is_some(),
-                size_bytes: None,
+                size_bytes: loc.size,
+                library: Some(self.library_path(&loc)),
+                available: true,
                 bridge,
                 cloud: CloudSummary { state, last_sync },
             });
@@ -300,7 +368,7 @@ impl Backend for CliBackend {
     fn cloud_status(&self, appid: AppId, profile: &Profile) -> Result<CloudStatus> {
         let id = appid.to_string();
         // `cloud status` переписывает файл состояния — время берём до вызова.
-        let last_sync = mtime(&self.game_dir(appid).join(".carafe-cloud-state"));
+        let last_sync = mtime(&self.core.game_dir(appid).join(".carafe-cloud-state"));
         let (code, lines) = self.run(
             &["cloud", "status", &id],
             profile,
@@ -402,6 +470,198 @@ impl Backend for CliBackend {
             Err(BackendError::new("не нашёл Steam для Mac"))
         }
     }
+
+    fn libraries(&self) -> Result<Vec<Library>> {
+        Ok(self
+            .core
+            .libraries()
+            .map_err(core_err)?
+            .into_iter()
+            .map(|l| Library {
+                path: l.folder.path.display().to_string(),
+                name: library_name(&l.folder.path, l.folder.builtin),
+                builtin: l.folder.builtin,
+                default: l.folder.default,
+                available: l.available,
+                total_bytes: l.space.map(|s| s.total),
+                free_bytes: l.space.map(|s| s.free),
+                used_bytes: l.used,
+                games: l.folder.apps.len() as u32,
+            })
+            .collect())
+    }
+
+    fn add_library(&self, path: &Path) -> Result<()> {
+        self.core.library_add(path).map(|_| ()).map_err(core_err)
+    }
+
+    fn remove_library(&self, path: &Path) -> Result<()> {
+        self.core.library_remove(path).map_err(core_err)
+    }
+
+    fn set_default_library(&self, path: &Path) -> Result<()> {
+        self.core.library_set_default(path).map_err(core_err)
+    }
+
+    fn install(&self, appid: AppId, library: Option<&Path>) -> Result<()> {
+        self.core
+            .enqueue_game(appid, library, false)
+            .map_err(core_err)?;
+        self.ensure_worker();
+        Ok(())
+    }
+
+    fn move_game(
+        &self,
+        appid: AppId,
+        library: &Path,
+        cancel: &AtomicBool,
+        events: Events,
+    ) -> Result<()> {
+        if self
+            .queue
+            .jobs()
+            .is_ok_and(|j| j.iter().any(|j| j.appid == appid))
+        {
+            return Err(BackendError::new("игра в очереди загрузок"));
+        }
+        stage_ev(events, Stage::Move, StageStatus::Active);
+        let mut last = Instant::now();
+        let r = self.core.move_game(appid, library, cancel, &mut |p| {
+            if last.elapsed() > Duration::from_millis(100) || p.done == p.total {
+                last = Instant::now();
+                events(TaskEvent::Progress {
+                    stage: Stage::Move,
+                    fraction: if p.total == 0 {
+                        1.0
+                    } else {
+                        p.done as f32 / p.total as f32
+                    },
+                });
+            }
+        });
+        match r {
+            Ok((dst, _)) => {
+                events(TaskEvent::Log {
+                    line: format!("==> {appid} → {}", dst.display()),
+                });
+                stage_ev(events, Stage::Move, StageStatus::Done);
+                Ok(())
+            }
+            Err(e) => {
+                let e = core_err(e);
+                stage_ev(
+                    events,
+                    Stage::Move,
+                    StageStatus::Failed {
+                        message: e.0.clone(),
+                    },
+                );
+                Err(e)
+            }
+        }
+    }
+
+    fn downloads(&self) -> Result<Vec<Download>> {
+        self.ensure_worker();
+        let jobs = self.queue.jobs().map_err(core_err)?;
+        Ok(jobs
+            .into_iter()
+            .map(|j| Download {
+                appid: j.appid,
+                name: j
+                    .name
+                    .clone()
+                    .or_else(|| self.core.cached_app_info(j.appid).and_then(|i| i.name))
+                    .unwrap_or_else(|| format!("App {}", j.appid)),
+                cover: Cover::for_app(j.appid),
+                library: j
+                    .dir
+                    .parent()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default(),
+                kind: match j.kind {
+                    JobKind::Install => DownloadKind::Install,
+                    JobKind::Update => DownloadKind::Update,
+                    JobKind::Verify => DownloadKind::Verify,
+                },
+                state: match j.state {
+                    JobState::Queued => DownloadState::Queued,
+                    JobState::Active => DownloadState::Active,
+                    JobState::Paused => DownloadState::Paused,
+                    JobState::Failed => DownloadState::Failed,
+                },
+                stage: j.stage.map(|s| {
+                    use carafe_core::DownloadStage as S;
+                    match s {
+                        S::Preparing => DownloadStage::Preparing,
+                        S::Allocating => DownloadStage::Allocating,
+                        S::Downloading => DownloadStage::Downloading,
+                        S::Verifying => DownloadStage::Verifying,
+                        S::Committing => DownloadStage::Committing,
+                    }
+                }),
+                done_bytes: j.done,
+                total_bytes: j.total,
+                speed: j.speed,
+                eta_secs: j.eta,
+                error: j.error,
+            })
+            .collect())
+    }
+
+    fn download_action(&self, appid: AppId, action: DownloadAction) -> Result<()> {
+        let q = &self.queue;
+        let r = match action {
+            DownloadAction::Pause => q.pause(appid),
+            DownloadAction::Resume => q.resume(appid),
+            DownloadAction::Cancel => q.cancel(appid),
+            DownloadAction::Top => q.move_to(appid, 0),
+            DownloadAction::Up | DownloadAction::Down => {
+                let jobs = q.jobs().map_err(core_err)?;
+                let i = jobs.iter().position(|j| j.appid == appid).unwrap_or(0);
+                let to = if action == DownloadAction::Up {
+                    i.saturating_sub(1)
+                } else {
+                    i + 1
+                };
+                q.move_to(appid, to)
+            }
+        };
+        r.map_err(core_err)
+    }
+
+    fn shutdown(&self) {
+        self.shutdown.store(true, Ordering::Relaxed);
+        // steamcmd останавливается за секунды; дольше выход не держим.
+        let w = self.worker.lock().expect("worker").take();
+        if let Some(w) = w {
+            let t = Instant::now();
+            while !w.is_finished() && t.elapsed() < Duration::from_secs(8) {
+                thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+}
+
+fn core_err(e: carafe_core::Error) -> BackendError {
+    BackendError::new(e.to_string())
+}
+
+/// Имя библиотеки для списка: встроенная, том (`/Volumes/<том>/…`) или последняя папка.
+fn library_name(path: &Path, builtin: bool) -> String {
+    if builtin {
+        return "Встроенная".into();
+    }
+    let mut parts = path.components().map(|c| c.as_os_str().to_string_lossy());
+    if let (Some(_), Some(v), Some(vol)) = (parts.next(), parts.next(), parts.next())
+        && v == "Volumes"
+    {
+        return vol.into_owned();
+    }
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
 }
 
 /// Превращает вывод `carafe game run` в стадии запуска.
@@ -746,6 +1006,16 @@ fn sha256(p: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn library_names() {
+        assert_eq!(library_name(Path::new("/x/games"), true), "Встроенная");
+        assert_eq!(
+            library_name(Path::new("/Volumes/Samsung T7/Games"), false),
+            "Samsung T7"
+        );
+        assert_eq!(library_name(Path::new("/Users/me/Games"), false), "Games");
+    }
 
     #[test]
     fn cloud_lines() {

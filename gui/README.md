@@ -18,7 +18,7 @@ cargo clippy --all-targets -- -D warnings && cargo fmt --check && cargo test
 | `CARAFE_GUI_BACKEND` | `mock` — демо-данные; иначе `CliBackend`, если известен checkout |
 | `CARAFE_CHECKOUT` | checkout carafe с `bin/carafe` (то же — поле «Checkout carafe» в настройках) |
 | `CARAFE_MOCK=fresh` | демо первого запуска: нет движка, бутылки и Steam |
-| `CARAFE_GUI_ROUTE` | открыть экран сразу: `game/<appid>`, `play/<appid>`, `setup`, `settings` |
+| `CARAFE_GUI_ROUTE` | открыть экран сразу: `game/<appid>`, `play/<appid>`, `setup`, `settings`, `downloads`; `install/<appid>` и `move/<appid>` — с открытым меню библиотек, `move/<appid>/go` — сразу перенос |
 | `CARAFE_HOME`, `CARAFE_SOJU` | как у `bin/carafe` |
 
 Настройки лежат в `~/Library/Application Support/dev.usertrv.carafe/settings.json`. Сборка `.app` — `cargo install tauri-cli` и `cargo tauri build`, в этом шаге не настроена.
@@ -29,6 +29,8 @@ cargo clippy --all-targets -- -D warnings && cargo fmt --check && cargo test
 
 - `MockBackend` (`mock.rs`) — правдоподобные игры, задержки и события.
 - `CliBackend` (`cli.rs`) — зовёт `bin/carafe` и разбирает вывод: маркеры `==> Steam Cloud: pull|push`, `==> мост в Steam`, `==> запускаю`, строки облака `  = / ↓ / ↑ файл`, ошибки `carafe: …`. Состояние (игры, движки, бутылки, собран ли мост) читает с диска так же, как его раскладывает скрипт.
+
+Библиотеки, перенос игр и очередь загрузок (`ui/library.js`, `ui/library.css`) `CliBackend` берёт прямо из `carafe-core`: у bash-версии их нет. Очередь обрабатывает поток GUI загрузчиком steamcmd (нужен сохранённый вход `carafe steam login USER`); при выходе загрузка останавливается и продолжается при следующем запуске. Папку выбирает системный диалог `tauri-plugin-dialog`, он зовётся из Rust — JS-доступа к плагину в capabilities нет.
 
 Всё, что уходит в окно, проходит через `redact.rs`: Steam ID вырезается из путей и логов.
 
