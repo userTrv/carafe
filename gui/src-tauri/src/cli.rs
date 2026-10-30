@@ -247,11 +247,24 @@ impl CliBackend {
         args: &[&str],
         profile: &Profile,
         timeout: Option<Duration>,
+        on_line: impl FnMut(&str),
+    ) -> Result<(i32, Vec<String>)> {
+        self.run_env(args, profile, &[], timeout, on_line)
+    }
+
+    /// То же с дополнительными переменными окружения.
+    fn run_env(
+        &self,
+        args: &[&str],
+        profile: &Profile,
+        extra: &[(&str, String)],
+        timeout: Option<Duration>,
         mut on_line: impl FnMut(&str),
     ) -> Result<(i32, Vec<String>)> {
         let mut child = Command::new(&self.script)
             .args(args)
             .envs(self.env(profile))
+            .envs(extra.iter().map(|(k, v)| (*k, v.as_str())))
             .env_remove("CARAFE_EXE")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -522,20 +535,78 @@ impl Backend for CliBackend {
         })
     }
 
-    fn launch(&self, appid: AppId, profile: &Profile, events: Events) -> Result<i32> {
+    fn launch(
+        &self,
+        appid: AppId,
+        profile: &Profile,
+        opts: &LaunchOptions,
+        events: Events,
+    ) -> Result<Launched> {
         if self.core.game_platform(appid).ok().flatten() == Some(carafe_core::Platform::Macos) {
-            return self.launch_native(appid, events);
+            return self.launch_native(appid, events).map(|code| Launched {
+                code,
+                ..Launched::default()
+            });
         }
         let id = appid.to_string();
+        // Выгрузка после игры — отдельной задачей GUI, в фоне.
+        let mut extra = vec![("CARAFE_CLOUD_PUSH", "0".to_string())];
+        if !opts.pull {
+            extra.push(("CARAFE_CLOUD_PULL", "0".into()));
+        }
+        if let Some(p) = opts.prefer {
+            extra.push(("CARAFE_CLOUD_PREFER", p.as_str().into()));
+        }
         let mut tracker = LaunchTracker::new(events);
-        let (code, lines) = self.run(&["game", "run", &id], profile, None, |line| {
+        let (code, lines) = self.run_env(&["game", "run", &id], profile, &extra, None, |line| {
             tracker.line(line);
         })?;
         tracker.finish(code);
+        if tracker.conflict && !tracker.game_started {
+            events(TaskEvent::CloudConflict {
+                files: std::mem::take(&mut tracker.conflicts),
+            });
+            return Ok(Launched {
+                code,
+                conflict: true,
+                push: false,
+            });
+        }
         if code != 0 && !tracker.game_started {
             return Err(error_from(&lines));
         }
-        Ok(code)
+        Ok(Launched {
+            code,
+            conflict: false,
+            push: tracker.push_deferred,
+        })
+    }
+
+    fn cloud_push(&self, appid: AppId, profile: &Profile, events: Events) -> Result<()> {
+        let id = appid.to_string();
+        stage_ev(events, Stage::CloudPush, StageStatus::Active);
+        let mut conflicts = Vec::new();
+        let (code, lines) = self.run(&["cloud", "push", &id], profile, None, |l| {
+            events(TaskEvent::Log { line: l.into() });
+            if let Some(file) = parse_cloud_line(l) {
+                if file.action == CloudAction::Conflict {
+                    conflicts.push(file.clone());
+                }
+                events(TaskEvent::CloudFile { file });
+            }
+        })?;
+        if code == carafe_core::CONFLICT_EXIT {
+            stage_ev(
+                events,
+                Stage::CloudPush,
+                StageStatus::Failed {
+                    message: "конфликт сейвов".into(),
+                },
+            );
+            events(TaskEvent::CloudConflict { files: conflicts });
+            return Ok(());
+        }
+        finish_stage(events, Stage::CloudPush, code, &lines)
     }
 
     fn build_bridge(&self, appid: AppId, profile: &Profile, events: Events) -> Result<()> {
@@ -877,6 +948,11 @@ struct LaunchTracker<'a> {
     current: Option<Stage>,
     seen: Vec<Stage>,
     game_started: bool,
+    /// Pull нашёл конфликт: игра не запускалась.
+    conflict: bool,
+    conflicts: Vec<CloudFile>,
+    /// bin/carafe не выгружал (CARAFE_CLOUD_PUSH=0), а облако было включено.
+    push_deferred: bool,
 }
 
 impl<'a> LaunchTracker<'a> {
@@ -886,6 +962,9 @@ impl<'a> LaunchTracker<'a> {
             current: None,
             seen: Vec::new(),
             game_started: false,
+            conflict: false,
+            conflicts: Vec::new(),
+            push_deferred: false,
         }
     }
 
@@ -929,6 +1008,9 @@ impl<'a> LaunchTracker<'a> {
     fn line(&mut self, line: &str) {
         (self.events)(TaskEvent::Log { line: line.into() });
         if let Some(file) = parse_cloud_line(line) {
+            if file.action == CloudAction::Conflict {
+                self.conflicts.push(file.clone());
+            }
             (self.events)(TaskEvent::CloudFile { file });
             return;
         }
@@ -944,6 +1026,11 @@ impl<'a> LaunchTracker<'a> {
                 Stage::CloudPull,
                 "не удалось скачать сейвы — играем с локальными",
             );
+        } else if msg.starts_with("Steam Cloud: конфликт сейвов") && !self.game_started {
+            self.conflict = true;
+            self.fail(Stage::CloudPull, "конфликт сейвов");
+        } else if msg.starts_with("Steam Cloud: push отложен") {
+            self.push_deferred = true;
         } else if msg.starts_with("Steam Cloud: выгрузка не удалась") {
             self.fail(Stage::CloudPush, "выгрузка не удалась");
         } else if msg.starts_with("мост в Steam") {
@@ -967,7 +1054,7 @@ impl<'a> LaunchTracker<'a> {
                 self.fail(stage, &format!("код выхода {code}"));
             }
         }
-        if self.game_started && !self.seen.contains(&Stage::CloudPush) {
+        if self.game_started && !self.push_deferred && !self.seen.contains(&Stage::CloudPush) {
             // Мост или облако выключены: bin/carafe не выгружает сейвы.
             stage_ev(self.events, Stage::CloudPush, StageStatus::Skipped);
         }
@@ -1009,25 +1096,27 @@ fn error_from(lines: &[String]) -> BackendError {
     BackendError::new(msg.trim())
 }
 
-/// `  = файл`, `  ↓ файл`, `  ↑ файл (конфликт: …)` — формат `soju-steamd cloud`.
+/// `  = файл`, `  ↓ файл`, `  ↑ файл (конфликт: …)`, `  ! файл (конфликт: локально …; в облаке …)`
+/// — формат `soju-steamd cloud`, разбирает carafe-core.
 fn parse_cloud_line(line: &str) -> Option<CloudFile> {
-    let rest = line.strip_prefix("  ")?;
-    let mut chars = rest.chars();
-    let action = match chars.next()? {
-        '=' => CloudAction::Synced,
-        '↓' => CloudAction::Download,
-        '↑' => CloudAction::Upload,
-        _ => return None,
+    let e = carafe_core::CloudEntry::parse(line)?;
+    let action = match e.action {
+        carafe_core::CloudAction::Synced => CloudAction::Synced,
+        carafe_core::CloudAction::Download => CloudAction::Download,
+        carafe_core::CloudAction::Upload => CloudAction::Upload,
+        carafe_core::CloudAction::Conflict => CloudAction::Conflict,
     };
-    let rest = chars.as_str().strip_prefix(' ')?;
-    let (name, conflict) = match rest.find(" (конфликт") {
-        Some(i) => (&rest[..i], true),
-        None => (rest, false),
+    let side = |s: carafe_core::CloudSide| CloudSide {
+        modified: s.modified,
+        size: s.size,
     };
-    (!name.is_empty()).then(|| CloudFile {
-        name: name.into(),
+    let (local, cloud) = e.sides().map(|(l, c)| (side(l), side(c))).unzip();
+    Some(CloudFile {
+        conflict: e.is_conflict(),
+        name: e.name,
         action,
-        conflict,
+        local,
+        cloud,
     })
 }
 
@@ -1236,6 +1325,30 @@ mod tests {
         assert_eq!(parse_cloud_line("  = a b.json").unwrap().name, "a b.json");
         assert!(parse_cloud_line("==> Steam Cloud: status").is_none());
         assert!(parse_cloud_line("    \"memorysetup=1\"").is_none());
+        let f = parse_cloud_line(
+            "  ! slot (1).json (конфликт: локально 2026-10-30T13:42:59+03:00, 1234 Б; в облаке 2026-10-29T19:56:34+03:00, 99 Б)",
+        )
+        .unwrap();
+        assert_eq!((f.name.as_str(), f.action, f.conflict), ("slot (1).json", CloudAction::Conflict, true));
+        assert_eq!(f.local.unwrap().size, 1234);
+        assert_eq!(f.cloud.unwrap().modified, "2026-10-29T19:56:34+03:00");
+    }
+
+    #[test]
+    fn conflict_before_game() {
+        let sink = |_: TaskEvent| {};
+        let mut t = LaunchTracker::new(&sink);
+        for l in [
+            "==> Steam Cloud: pull",
+            "  ! a.json (конфликт: локально 2026-10-30T13:42:59+03:00, 1 Б; в облаке 2026-10-29T19:56:34+03:00, 2 Б)",
+            "soju cloud: конфликт: файлы менялись и на диске, и в облаке",
+            "==> Steam Cloud: конфликт сейвов — выбери, какие оставить",
+        ] {
+            t.line(l);
+        }
+        t.finish(3);
+        assert!(t.conflict && !t.game_started && !t.push_deferred);
+        assert_eq!(t.conflicts.len(), 1);
     }
 
     #[test]
@@ -1261,11 +1374,13 @@ mod tests {
             "==> мост в Steam: порт 1, лог x",
             "==> запускаю Game.exe",
             "esync: up and running.",
-            "==> Steam Cloud: push",
+            "==> Steam Cloud: push отложен",
         ] {
             t.line(l);
         }
         t.finish(0);
+        assert!(t.push_deferred);
+        drop(t);
         assert_eq!(
             got.into_inner().unwrap(),
             [
@@ -1275,8 +1390,6 @@ mod tests {
                 "Bridge:Done",
                 "Game:Active",
                 "Game:Done",
-                "CloudPush:Active",
-                "CloudPush:Done",
             ]
         );
     }

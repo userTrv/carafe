@@ -41,7 +41,7 @@ const FIX_ORDER = ["engine", "d3dMetal", "bottle", "steam"];
 
 // Этапы запуска — те, что шлёт бэкенд (`Stage` в backend.rs), по порядку.
 const STAGES = [
-  { id: "cloudPull", name: "Облако: скачиваю сохранения", short: "Облако" },
+  { id: "cloudPull", name: "Облако: проверяю сохранения", short: "Облако" },
   { id: "bridge", name: "Мост Steam", short: "Мост" },
   { id: "game", name: "В игре", short: "Игра" },
   { id: "cloudPush", name: "Облако: выгружаю сохранения", short: "Облако" },
@@ -202,7 +202,8 @@ async function start(cmd, args, name) {
   }
 }
 
-const play = (appid) => start("launch", { appid }, `launch:${appid}`);
+// prefer — выбор в окне конфликта сейвов (cloud.js): "local" | "cloud".
+const play = (appid, prefer) => start("launch", prefer ? { appid, prefer } : { appid }, `launch:${appid}`);
 const buildBridge = (appid) => start("build_bridge", { appid }, `bridge:${appid}`);
 
 async function fixAll() {
@@ -253,6 +254,7 @@ listen("task", ({ payload: { task: name, event } }) => {
   if (event.kind === "stage") t.stages[event.stage] = event.status;
   if (event.kind === "progress") t.progress[event.stage] = event.fraction;
   if (event.kind === "log" && appid) appendLog(appid, event.line);
+  cloudTaskEvent(t, event);
   refreshTaskViews(name, event.kind);
 });
 
@@ -269,7 +271,8 @@ listen("task-end", ({ payload }) => {
     S.confirm = null;
     loadEnv();
   }
-  if (kind === "launch" || kind === "bridge") {
+  cloudTaskEnd(kind, Number(id), t);
+  if (kind === "launch" || kind === "bridge" || kind === "push") {
     loadGames();
     if (S.view === "game" && S.appid === Number(id)) loadCloud(Number(id));
   }
@@ -288,7 +291,11 @@ function refreshTaskViews(name, kind) {
     if (type === "bridge") renderLabel();
     if (type === "launch" && !$("#log")) renderLog();
   }
-  if (S.view === "library" && type === "launch") renderLibraryBody();
+  if (S.view === "game" && S.appid === Number(id) && type === "push") {
+    renderFacts();
+    renderLabel();
+  }
+  if (S.view === "library" && (type === "launch" || type === "push")) renderLibraryBody();
   if (S.view === "setup" && (type === "fix" || type === "engine")) renderSetup();
 }
 
@@ -441,6 +448,7 @@ function gameStatus(g) {
   if (running(`launch:${g.appid}`)) return ["ok", "ИДЁТ"];
   if (g.available === false) return ["", "ДИСК ОТКЛЮЧЁН"];
   if (running(`move:${g.appid}`)) return ["warn", "ПЕРЕНОС"];
+  if (running(`push:${g.appid}`)) return ["ok", "СЕЙВЫ → ОБЛАКО"];
   if (g.platform === "macos") return ["ok", "MACOS"];
   if (g.cloud.state === "conflict") return ["warn", "КОНФЛИКТ ОБЛАКА"];
   if (g.bridge === "notBuilt") return ["warn", "МОСТ НЕ СОБРАН"];
@@ -799,7 +807,9 @@ function stagesState(t) {
   const failed = STAGES.find((s) => st(s) === "failed");
   let cur = STAGES.findIndex((s) => st(s) === "active");
   if (cur < 0) cur = STAGES.reduce((n, s, i) => (st(s) ? i : n), -1);
-  const label = failed ? `${failed.short}: ${t.stages[failed.id].message || "ошибка"}` : cur >= 0 ? STAGES[cur].name : "Запуск";
+  let label = failed ? `${failed.short}: ${t.stages[failed.id].message || "ошибка"}` : cur >= 0 ? STAGES[cur].name : "Запуск";
+  // «Скачиваю» — только если правда что-то едет из облака.
+  if (!failed && STAGES[cur]?.id === "cloudPull" && t.downloads) label = `Облако: скачиваю сохранения · ${t.downloads}`;
   return { label, num: Math.max(1, cur + 1), cls: STAGES.map((s) => `seg ${st(s) || ""}`) };
 }
 
@@ -856,9 +866,12 @@ function renderFacts() {
   if (g.installed) {
     const c = S.cloud[g.appid]?.data?.summary || g.cloud.state;
     const last = S.cloud[g.appid]?.data?.status.lastSync ?? g.cloud.lastSync;
-    const word = { synced: last ? ago(last) : "синхронизировано", pending: "есть изменения", conflict: "конфликт", never: "не синхронизировано" }[c];
+    const pushing = running(`push:${g.appid}`);
+    const word = pushing
+      ? pushLabel(g.appid)
+      : { synced: last ? ago(last) : "синхронизировано", pending: "есть изменения", conflict: "конфликт", never: "не синхронизировано" }[c];
     if (word)
-      items.push(fact("Облако", `<button class="fact-btn small" data-sheet="cloud">${dot(CLOUD[c].dot)}${esc(word)}</button>`));
+      items.push(fact("Облако", `<button class="fact-btn small" data-sheet="cloud">${dot(pushing ? "warn" : CLOUD[c].dot)}${esc(word)}</button>`));
   } else if (g.sizeBytes) {
     items.push(fact("Размер", esc(size(g.sizeBytes))));
   }
@@ -954,7 +967,7 @@ function renderLabel() {
       ["Движок", e ? e.name : S.env ? "не установлен" : "…", e ? "ok" : "warn"],
       ["Графика", e ? (e.d3dmetal ? "D3DMetal" : "без D3DMetal") : "…", e?.d3dmetal && okCheck("d3dMetal") !== false ? "ok" : "warn"],
       ["Steam", building ? "собираю мост" : BRIDGE[g.bridge].label, building ? "warn" : BRIDGE[g.bridge].dot],
-      ["Облако", `${c.label}${last ? ` · ${ago(last)}` : ""}`, c.dot],
+      running(`push:${g.appid}`) ? ["Облако", pushLabel(g.appid), "warn"] : ["Облако", `${c.label}${last ? ` · ${ago(last)}` : ""}`, c.dot],
       ["Папка", g.library ? `${libName(g.library)}${g.available === false ? " · отключена" : ""}` : "—", g.available === false ? "warn" : ""],
       ["Бутылка", p ? p.bottle : "…", ""],
     );
@@ -1024,9 +1037,9 @@ function renderCloud() {
     el.innerHTML = `${meta}<div class="row"><span class="row-label" style="color:var(--text-2)">${esc(c.data.status.note || "Файлов нет")}</span></div>`;
     return;
   }
-  const ico = { synced: I.check, download: I.cloudDown, upload: I.cloudUp };
-  const word = { synced: "=", download: "↓", upload: "↑" };
-  const tip = { synced: "Синхронизирован", download: "Скачается", upload: "Выгрузится" };
+  const ico = { synced: I.check, download: I.cloudDown, upload: I.cloudUp, conflict: I.conflict };
+  const word = { synced: "=", download: "↓", upload: "↑", conflict: "!" };
+  const tip = { synced: "Синхронизирован", download: "Скачается", upload: "Выгрузится", conflict: "Менялся и здесь, и в облаке" };
   el.innerHTML =
     meta +
     `<ul class="files">${files

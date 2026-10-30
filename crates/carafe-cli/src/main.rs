@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use carafe_core::download::steamcmd_accounts;
 use carafe_core::{
-    ActiveSource, AutoDownloader, BridgeState, BridgeTarget, Carafe, CloudMode, Downloader, EngineKind, Error,
+    ActiveSource, AutoDownloader, BridgeState, BridgeTarget, Carafe, CloudMode, Downloader, EngineKind, Error, Prefer,
     JobState, MoveKind, Platform, Queue, QueueEvent, SteamCmdDownloader, human_bytes, parse_appid,
 };
 
@@ -49,12 +49,16 @@ const USAGE: &str = "\
   carafe downloads pause|resume|cancel|top APPID
   carafe bridge build APPID|DLL    собрать мост в Steam для Mac (ачивки, лидерборды) — из soju
   carafe bridge test APPID|DLL     проверить мост на Spacewar (480) против нативного Steam
-  carafe cloud status|pull|push APPID  сейвы со Steam Cloud (game run делает pull/push сам)
+  carafe cloud status|pull|push APPID [--prefer local|cloud]
+                                   сейвы со Steam Cloud (game run делает pull/push сам);
+                                   конфликт (менялись и диск, и облако) — код 3, решается --prefer
   carafe run EXE [ARGS...]         запустить произвольный .exe в префиксе
   carafe wine [ARGS...]            вызвать wine с окружением префикса (winecfg и т. п.)
 
 Переменные: CARAFE_BOTTLE (префикс, default), CARAFE_EXE (exe игры вручную),
             CARAFE_HUD=1 (Metal HUD с FPS), CARAFE_BRIDGE=0 (запуск без моста).
+            CARAFE_CLOUD=0 (без облака), CARAFE_CLOUD_PULL=0 / CARAFE_CLOUD_PUSH=0 (game run без
+            скачивания до игры / без выгрузки после), CARAFE_CLOUD_PREFER=local|cloud (как решить конфликт).
             CARAFE_ENGINE_DIR (свой движок, например dist/soju-engine из soju),
             CARAFE_SOJU (checkout soju, по умолчанию ../soju рядом с carafe).
             CARAFE_STEAM_HELPER (carafe-steam, по умолчанию steam/dist рядом с carafe).
@@ -418,7 +422,12 @@ fn run(args: &[OsString]) -> Result<i32, Fail> {
         }
         ("cloud", m) => {
             let mode = CloudMode::parse(m).ok_or(Fail::Usage)?;
-            c.cloud_sync(appid(args, 2)?, mode, &mut |e| println!("{e}"))?;
+            let prefer = match (args.get(3).and_then(|a| a.to_str()), args.get(4).and_then(|a| a.to_str())) {
+                (None, _) => c.config.cloud_prefer,
+                (Some("--prefer"), Some(p)) => Some(Prefer::parse(p).ok_or(Fail::Usage)?),
+                _ => return Err(Fail::Usage),
+            };
+            c.cloud_sync_prefer(appid(args, 2)?, mode, prefer, &mut |e| println!("{e}"))?;
         }
         ("run", _) => {
             let exe = args.get(1).filter(|a| !a.is_empty()).ok_or(Error::Usage("нужен путь к exe"))?;

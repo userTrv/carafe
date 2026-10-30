@@ -86,7 +86,7 @@ carafe game run <appid>
 | `carafe library list\|add\|remove\|default\|du` | папки библиотек и место на дисках |
 | `carafe downloads [list\|run\|pause\|resume\|cancel\|top APPID]` | очередь загрузок |
 | `carafe bridge build\|test APPID` | собрать мост, сверить его с нативным Steam на Spacewar (480) |
-| `carafe cloud status\|pull\|push APPID` | Steam Cloud вручную |
+| `carafe cloud status\|pull\|push APPID [--prefer local\|cloud]` | Steam Cloud вручную; конфликт — код 3 |
 | `carafe run EXE`, `carafe wine ...` | любой .exe или wine в префиксе |
 
 Переменные окружения:
@@ -98,6 +98,8 @@ carafe game run <appid>
 | `CARAFE_HUD=1` | Metal HUD с FPS |
 | `CARAFE_BRIDGE=0` | запуск без моста, с оригинальной `steam_api64.dll` |
 | `CARAFE_CLOUD=0` | `game run` не трогает Steam Cloud |
+| `CARAFE_CLOUD_PULL=0`, `CARAFE_CLOUD_PUSH=0` | `game run` без скачивания до игры или без выгрузки после |
+| `CARAFE_CLOUD_PREFER=local\|cloud` | чьи сейвы оставить при конфликте (менялись и диск, и облако) |
 | `CARAFE_ENGINE_DIR` | свой движок, например `dist/soju-engine` из soju; главнее выбранного `engine use` |
 | `CARAFE_SOJU` | checkout soju, по умолчанию `../soju` |
 | `CARAFE_STEAM_HELPER` | свой `carafe-steam`, по умолчанию `steam/dist/<rid>/` |
@@ -127,7 +129,7 @@ flowchart LR
 
 - **carafe-core** (`crates/carafe-core`) знает всё о библиотеках, очереди, движке, бутылках, облаке и запуске. На нём стоят CLI (`crates/carafe-cli`) и окно (`gui/`).
 - **carafe-steam** (`steam/`) входит в Steam по QR, отдаёт список купленных игр и качает депо. Пароля не принимает; токен получает только через stdin. Протокол: `steam/PROTOCOL.md`.
-- **soju** даёт мост: заглушка `steam_api64.dll` в игре передаёт вызовы Steamworks нативному хелперу, а тот говорит с запущенным Steam для Mac от имени игры. Через тот же хелпер carafe синхронизирует Steam Cloud по правилам Auto-Cloud игры; проигравшая при конфликте версия уходит в `backups/<appid>/<время>/`.
+- **soju** даёт мост: заглушка `steam_api64.dll` в игре передаёт вызовы Steamworks нативному хелперу, а тот говорит с запущенным Steam для Mac от имени игры. Через тот же хелпер carafe синхронизирует Steam Cloud по правилам Auto-Cloud игры: каждый файл сравнивается с последней синхронизацией, поменялась одна сторона — едет на другую, обе — конфликт, и выбирает пользователь (окно перед запуском, `--prefer` в CLI); проигравшая версия уходит в `backups/<appid>/<время>/`. Журнал облака со временем каждого запроса — `cloud-<appid>.log`. Окно выгружает сейвы после игры в фоне и не ждёт этого при повторном запуске.
 - Данные лежат в `~/Library/Application Support/carafe`: движки, бутылки, игры встроенной библиотеки, очередь `downloads.vdf`, список папок `libraryfolders.vdf`.
 
 ## Разработка

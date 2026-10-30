@@ -22,7 +22,8 @@ pub enum LaunchEvent {
     /// Файл скачан из облака (или уже совпадал — в pull такие не печатаются).
     CloudEntry(CloudEntry),
     CloudPulled(CloudReport),
-    /// Не скачалось: игра идёт с локальными сейвами, выгрузки после неё не будет.
+    /// Не скачалось: игра идёт с локальными сейвами, выгрузки после неё не будет. Конфликт сюда
+    /// не попадает: с ним игра не запускается, `run_game` возвращает [`Error::CloudConflict`].
     CloudPullFailed {
         error: String,
     },
@@ -52,9 +53,10 @@ fn bridge_port(line: &str) -> Option<u16> {
 impl Carafe {
     /// Запустить игру и дождаться её выхода. Возвращает код выхода wine.
     ///
-    /// С мостом: Steam Cloud pull (ошибка не мешает играть), хелпер моста, игра; хелпер живёт,
-    /// пока игра не отключится от Steam, — лаунчер wine может выйти раньше; затем push.
-    /// Без моста облака нет: хелпер облака — часть моста.
+    /// С мостом: Steam Cloud pull (ошибка не мешает играть, конфликт — мешает: сначала выбор,
+    /// `CARAFE_CLOUD_PREFER`), хелпер моста, игра; хелпер живёт, пока игра не отключится от Steam,
+    /// — лаунчер wine может выйти раньше; затем push. `CARAFE_CLOUD_PULL=0` / `CARAFE_CLOUD_PUSH=0`
+    /// убирают pull или push. Без моста облака нет: хелпер облака — часть моста.
     ///
     /// Нативная macOS-игра ([`crate::native`]) запускается сама, без Wine, моста и облака carafe.
     pub fn run_game(&self, appid: u32, args: &[OsString], on_event: &mut dyn FnMut(LaunchEvent)) -> Result<i32> {
@@ -83,10 +85,11 @@ impl Carafe {
 
         // Облако до запуска: игра должна увидеть свежие сейвы.
         let mut cloud = self.config.cloud;
-        if cloud {
+        if cloud && self.config.cloud_pull {
             on_event(LaunchEvent::CloudPullStarted);
             match self.cloud_sync(appid, CloudMode::Pull, &mut |e| on_event(LaunchEvent::CloudEntry(e.clone()))) {
                 Ok(r) => on_event(LaunchEvent::CloudPulled(r)),
+                Err(e @ Error::CloudConflict(_)) => return Err(e),
                 Err(e) => {
                     self.log(Log::Output(format!("carafe: {e}")));
                     self.log(Log::Step(
@@ -126,7 +129,7 @@ impl Carafe {
         on_event(LaunchEvent::GameExited { code });
 
         // Хелпер выходит, когда игра отключилась, — значит, сейвы уже на диске.
-        if cloud {
+        if cloud && self.config.cloud_push {
             on_event(LaunchEvent::CloudPushStarted);
             match self.cloud_sync(appid, CloudMode::Push, &mut |e| on_event(LaunchEvent::CloudEntry(e.clone()))) {
                 Ok(r) => on_event(LaunchEvent::CloudPushed(r)),

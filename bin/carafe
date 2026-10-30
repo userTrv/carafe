@@ -42,12 +42,16 @@ usage() {
   carafe game run APPID [ARGS...]  запустить игру (exe ищется в папке игры; нативную — её .app)
   carafe bridge build APPID|DLL    собрать мост в Steam для Mac (ачивки, лидерборды) — из soju
   carafe bridge test APPID|DLL     проверить мост на Spacewar (480) против нативного Steam
-  carafe cloud status|pull|push APPID  сейвы со Steam Cloud (game run делает pull/push сам)
+  carafe cloud status|pull|push APPID [--prefer local|cloud]
+                                   сейвы со Steam Cloud (game run делает pull/push сам);
+                                   конфликт (менялись и диск, и облако) — код 3, решается --prefer
   carafe run EXE [ARGS...]         запустить произвольный .exe в префиксе
   carafe wine [ARGS...]            вызвать wine с окружением префикса (winecfg и т. п.)
 
 Переменные: CARAFE_BOTTLE (префикс, default), CARAFE_EXE (exe игры вручную),
             CARAFE_HUD=1 (Metal HUD с FPS), CARAFE_BRIDGE=0 (запуск без моста).
+            CARAFE_CLOUD=0 (без облака), CARAFE_CLOUD_PULL=0 / CARAFE_CLOUD_PUSH=0 (game run без
+            скачивания до игры / без выгрузки после), CARAFE_CLOUD_PREFER=local|cloud (как решить конфликт).
             CARAFE_ENGINE_DIR (свой движок, например dist/soju-engine из soju),
             CARAFE_SOJU (checkout soju, по умолчанию ../soju рядом с carafe).
 EOF
@@ -710,9 +714,11 @@ cloud_rules() {
   cat "$cache"
 }
 
-# Синхронизация сейвов со Steam Cloud через Steam для Mac. mode: status|pull|push.
+# Синхронизация сейвов со Steam Cloud через Steam для Mac. mode: status|pull|push; prefer — local|cloud
+# или пусто. Код 3 — конфликт: сейвы менялись и на диске, и в облаке, ничего не перенесено.
+# Журнал с временем каждого запроса — cloud-<appid>.log (Steam ID замаскированы).
 cloud_sync() {
-  local mode="$1" appid="$2" pair orig sha
+  local mode="$1" appid="$2" prefer="${3:-}" pair orig sha
   pair="$(steam_api_orig "$GAMES/$appid")" || die "в игре нет steam_api64.dll — облака у неё нет"
   orig="${pair##*|}"
   sha="$(shasum -a 256 "$orig" | cut -d' ' -f1)"
@@ -725,12 +731,35 @@ cloud_sync() {
     --state "$GAMES/$appid/.carafe-cloud-state" --backup "$CARAFE_HOME/backups/$appid"
     --root "WinAppDataLocalLow=$u/AppData/LocalLow" --root "WinAppDataLocal=$u/AppData/Local"
     --root "WinAppDataRoaming=$u/AppData/Roaming" --root "WinMyDocuments=$u/Documents"
-    --root "WinSavedGames=$u/Saved Games" --root "gameinstall=$GAMES/$appid")
+    --root "WinSavedGames=$u/Saved Games" --root "gameinstall=$GAMES/$appid"
+    --log "$CARAFE_HOME/cloud-$appid.log")
+  if [[ -n "$prefer" ]]; then
+    [[ "$prefer" == local || "$prefer" == cloud ]] || die "--prefer local или --prefer cloud"
+    args+=(--prefer "$prefer")
+  fi
   local r n=0
   while IFS= read -r r; do [[ -n "$r" ]] && { args+=(--rule "$r"); n=$((n + 1)); }; done < <(cloud_rules "$appid")
   [[ $n -gt 0 ]] || { log "у игры нет правил Auto-Cloud — синхронизировать нечего"; return 0; }
   log "Steam Cloud: $mode"
-  SteamAppId="$appid" "$steamd" "${args[@]}"
+  local rc=0 t0=$SECONDS
+  SteamAppId="$appid" "$steamd" "${args[@]}" || rc=$?
+  printf '%s carafe: cloud %s — код %d, %d с\n' "$(date +%T)" "$mode" "$rc" $((SECONDS - t0)) >> "$CARAFE_HOME/cloud-$appid.log"
+  return "$rc"
+}
+
+# Конфликт перед игрой: в терминале спросить, какую сторону оставить. Печатает local|cloud.
+ask_conflict() {
+  [[ -t 0 && -t 2 ]] || return 1
+  local a
+  while true; do
+    printf 'Сейвы менялись и здесь, и в облаке. [l] оставить локальные, [c] взять из облака, [q] не запускать: ' >&2
+    read -r a || return 1
+    case "$a" in
+      l|L|д|Д) echo local; return 0 ;;
+      c|C|с|С) echo cloud; return 0 ;;
+      q|Q|"") return 1 ;;
+    esac
+  done
 }
 
 # Нативная macOS-игра (метка .carafe-native, ставит Rust-версия): .app из appinfo или в корне.
@@ -773,11 +802,24 @@ cmd_game_run() {
     cmd_run "$exe" "$@"
   fi
 
-  # Облако до запуска: игра должна увидеть свежие сейвы. Ошибка синхронизации не мешает играть.
-  local cloud="${CARAFE_CLOUD:-1}"
-  if [[ "$cloud" == 1 ]] && ! cloud_sync pull "$appid"; then
-    log "Steam Cloud: не удалось скачать сейвы — играю с локальными, выгружать после игры не буду"
-    cloud=0
+  # Облако до запуска: игра должна увидеть свежие сейвы. Ошибка синхронизации не мешает играть,
+  # конфликт — мешает: сначала выбрать, какие сейвы оставить (вторые уйдут в backups).
+  # CARAFE_CLOUD_PULL=0 — без скачивания: GUI так запускает игру, пока ещё выгружает сейвы
+  # прошлого запуска, — локальные и так новее.
+  local cloud="${CARAFE_CLOUD:-1}" prefer="${CARAFE_CLOUD_PREFER:-}" rc=0
+  if [[ "$cloud" == 1 && "${CARAFE_CLOUD_PULL:-1}" == 1 ]]; then
+    cloud_sync pull "$appid" "$prefer" || rc=$?
+    if [[ "$rc" == 3 ]] && prefer="$(ask_conflict)"; then
+      rc=0
+      cloud_sync pull "$appid" "$prefer" || rc=$?
+    fi
+    if [[ "$rc" == 3 ]]; then
+      log "Steam Cloud: конфликт сейвов — выбери, какие оставить: CARAFE_CLOUD_PREFER=local или cloud (вторые уйдут в backups)"
+      return 3
+    elif [[ "$rc" != 0 ]]; then
+      log "Steam Cloud: не удалось скачать сейвы — играю с локальными, выгружать после игры не буду"
+      cloud=0
+    fi
   fi
 
   log "запускаю $exe"
@@ -787,8 +829,17 @@ cmd_game_run() {
   SOJU_BRIDGE_LOG="$CARAFE_HOME/bridge-$appid.log" soju_bridge exec "$bridge" "$appid" \
     "$CARAFE_SRC/bin/carafe" run "$exe" "$@" || rc=$?
   # Хелпер выходит, когда игра отключилась, — значит, сейвы уже на диске.
-  if [[ "$cloud" == 1 ]]; then
-    cloud_sync push "$appid" || log "Steam Cloud: выгрузка не удалась — повтори: carafe cloud push $appid"
+  # CARAFE_CLOUD_PUSH=0 — выгружает вызывающий (GUI — в фоне, не держа окно).
+  if [[ "$cloud" == 1 && "${CARAFE_CLOUD_PUSH:-1}" == 1 ]]; then
+    local prc=0
+    cloud_sync push "$appid" || prc=$?
+    if [[ "$prc" == 3 ]]; then
+      log "Steam Cloud: конфликт сейвов — пока шла игра, облако поменялось: carafe cloud push $appid --prefer local|cloud"
+    elif [[ "$prc" != 0 ]]; then
+      log "Steam Cloud: выгрузка не удалась — повтори: carafe cloud push $appid"
+    fi
+  elif [[ "$cloud" == 1 ]]; then
+    log "Steam Cloud: push отложен — выгрузит вызывающий: carafe cloud push $appid"
   fi
   return "$rc"
 }
@@ -830,7 +881,9 @@ case "${1:-}" in
     esac ;;
   cloud)
     case "${2:-}" in
-      status|pull|push) cloud_sync "$2" "${3:?нужен APPID}" ;;
+      status|pull|push)
+        [[ -z "${4:-}" || ( "$4" == --prefer && -n "${5:-}" ) ]] || die "carafe cloud $2 APPID [--prefer local|cloud]"
+        cloud_sync "$2" "${3:?нужен APPID}" "${5:-}" ;;
       *) usage; exit 1 ;;
     esac ;;
   run) shift; cmd_run "$@" ;;
