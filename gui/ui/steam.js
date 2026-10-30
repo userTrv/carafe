@@ -48,8 +48,11 @@ async function loadAccount() {
   if (S.account) loadOwned();
   else {
     if (S.owned) S.owned = null;
+    S.stats = {};
     remerge();
   }
+  // Время в игре и достижения — только с входом; без него блоки просто исчезают.
+  if (S.view === "game") S.account ? loadStats(S.appid) : renderStats();
 }
 
 async function loadOwned() {

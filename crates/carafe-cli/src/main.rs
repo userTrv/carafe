@@ -38,6 +38,7 @@ const USAGE: &str = "\
   carafe game run APPID [ARGS...]  запустить игру (exe ищется в папке игры)
   carafe game list                 установленные игры: мост, правила облака
   carafe game owned [--json]       все купленные игры аккаунта (после carafe login)
+  carafe game stats APPID [--json] время в игре и достижения (после carafe login)
   carafe library list              папки библиотек: место на диске, игры
   carafe library add|remove DIR    добавить или убрать папку (файлы не трогаются)
   carafe library default DIR       папка для новых установок
@@ -263,6 +264,7 @@ fn run(args: &[OsString]) -> Result<i32, Fail> {
         ("logout", _) => account::logout(&c)?,
         ("account", _) => account::status(&c, json_flag(args, 1)?)?,
         ("game", "owned") => account::owned(&c, json_flag(args, 2)?)?,
+        ("game", "stats") => account::stats(&c, parse_appid(need(args, 2, "нужен APPID")?)?, json_flag(args, 3)?)?,
         ("game", "install" | "verify") => {
             let id = appid(args, 2)?;
             let (pos, to) = split_to(&args[3..])?;

@@ -111,3 +111,45 @@ pub fn owned(c: &Carafe, json: bool) -> Result<(), Error> {
     }
     Ok(())
 }
+
+/// Время в игре и достижения: сводка и открытые, свежие первыми.
+pub fn stats(c: &Carafe, appid: u32, json: bool) -> Result<(), Error> {
+    let st = c.steam_game_stats(appid, "russian")?;
+    if json {
+        let p = st.playtime.as_ref();
+        let list: Vec<_> = st.achievements.iter().flat_map(|a| &a.achievements).map(|x| json!({
+            "id": x.id, "name": x.name, "description": x.description, "icon": x.icon, "icon_gray": x.icon_gray,
+            "hidden": x.hidden, "unlocked": x.unlocked, "unlocked_at": x.unlocked_at, "global_percent": x.global_percent,
+        })).collect();
+        emit(json!({
+            "appid": appid,
+            "minutes": p.map(|p| p.minutes),
+            "minutes_2weeks": p.map(|p| p.minutes_2weeks),
+            "last_played": p.and_then(|p| p.last_played),
+            "achievements": st.achievements.as_ref().map(|a| json!({ "total": a.total, "unlocked": a.unlocked, "items": list })),
+        }));
+        return Ok(());
+    }
+    match &st.playtime {
+        Some(p) => {
+            let last = p.last_played.map(|t| format!(", последний запуск {t}")).unwrap_or_default();
+            println!(
+                "в игре: {:.1} ч (за 2 недели {:.1} ч){last}",
+                p.minutes as f64 / 60.0,
+                p.minutes_2weeks as f64 / 60.0
+            )
+        }
+        None => println!("в игре: нет данных"),
+    }
+    let Some(a) = &st.achievements else {
+        println!("достижений нет");
+        return Ok(());
+    };
+    println!("достижения: {}/{}", a.unlocked, a.total);
+    let mut open: Vec<_> = a.achievements.iter().filter(|x| x.unlocked).collect();
+    open.sort_by_key(|x| std::cmp::Reverse(x.unlocked_at));
+    for x in open {
+        println!("  {}\t{}", x.unlocked_at.unwrap_or_default(), x.name);
+    }
+    Ok(())
+}

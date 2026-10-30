@@ -16,6 +16,9 @@ const S = {
   cloud: {}, // appid → { loading, data, error }
   tasks: {}, // task → { running, stages, progress, ok, error }
   logs: {}, // appid → строки
+  stats: {}, // appid → { loading, data: { playtime, achievements } | null, error }
+  sheet: null, // открыта ли панель «Подробности»: true или раздел ("cloud", "log")
+  achAll: false,
 };
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -76,6 +79,23 @@ function size(b) {
   if (b >= 1e9) return `${(b / 1e9).toFixed(b >= 1e10 ? 0 : 1)} GB`;
   return `${Math.max(1, Math.round(b / 1e6))} MB`;
 }
+
+// Время в игре: «42 мин», «1,5 ч», «126 ч».
+function hours(min) {
+  if (min < 60) return `${min} мин`;
+  const h = min / 60;
+  return `${h < 10 ? h.toLocaleString("ru", { maximumFractionDigits: 1 }) : Math.round(h).toLocaleString("ru")} ч`;
+}
+
+// «12 окт.», в прошлые годы — с годом.
+function day(ts) {
+  const d = new Date(ts * 1000);
+  const opts = { day: "numeric", month: "short" };
+  if (d.getFullYear() !== new Date().getFullYear()) opts.year = "numeric";
+  return d.toLocaleDateString("ru", opts);
+}
+
+const pct = (x) => `${x.toLocaleString("ru", { maximumFractionDigits: x < 1 ? 1 : 0 })}%`;
 
 const dot = (cls) => `<span class="dot ${cls || ""}" aria-hidden="true"></span>`;
 
@@ -138,6 +158,21 @@ async function loadCloud(appid) {
     renderCloud();
     renderLabel();
   }
+}
+
+// Время в игре и достижения — из Steam через хелпер; бэкенд держит кэш. Без входа — ничего.
+async function loadStats(appid, fresh = false) {
+  const cur = S.stats[appid];
+  if (!S.account || cur?.loading) return;
+  S.stats[appid] = { ...(cur || {}), loading: true };
+  if (S.view === "game" && S.appid === appid && !cur?.data) renderFacts();
+  try {
+    S.stats[appid] = { loading: false, data: await invoke("game_stats", { appid, fresh }) };
+  } catch (e) {
+    // Не вышло — просто без этих блоков (или с прежними цифрами).
+    S.stats[appid] = { loading: false, data: cur?.data ?? null, error: String(e) };
+  }
+  if (S.view === "game" && S.appid === appid) renderStats();
 }
 
 const game = (appid) => (S.games || []).find((g) => g.appid === appid);
@@ -238,8 +273,11 @@ listen("task-end", ({ payload }) => {
     loadGames();
     if (S.view === "game" && S.appid === Number(id)) loadCloud(Number(id));
   }
+  // Steam досчитывает время сессии не сразу.
+  if (kind === "launch" && payload.ok) setTimeout(() => loadStats(Number(id), true), 5000);
   S.waiters?.[payload.task]?.();
   refreshTaskViews(payload.task);
+  if (kind === "launch" && !payload.ok && S.view === "game" && S.appid === Number(id)) openSheet("log");
 });
 
 function refreshTaskViews(name, kind) {
@@ -258,8 +296,15 @@ function refreshTaskViews(name, kind) {
 
 function go(view, appid = null) {
   if (typeof closeMenu === "function") closeMenu();
+  if (view !== S.view || appid !== S.appid) {
+    S.sheet = null;
+    S.achAll = false;
+  }
+  const left = S.view === "downloads" && view !== "downloads";
   S.view = view;
   S.appid = appid;
+  if (left) seenDownloads();
+  else renderDlBadge();
   document.querySelectorAll(".tab[data-view]").forEach((b) => {
     const on = b.dataset.view === view || (view === "game" && b.dataset.view === "library");
     if (on) b.setAttribute("aria-current", "page");
@@ -271,6 +316,7 @@ function go(view, appid = null) {
   if (view === "game") {
     renderGame();
     if (!S.cloud[appid] && game(appid)?.installed) loadCloud(appid);
+    loadStats(appid);
   }
   if (view === "setup") {
     renderSetup();
@@ -523,6 +569,12 @@ main.addEventListener("click", (e) => {
     return;
   }
   if (e.target.closest("[data-login]")) return void steamLogin();
+  const sh = e.target.closest("[data-sheet]");
+  if (sh) return void openSheet(sh.dataset.sheet || null);
+  if (e.target.closest("#ach-all")) {
+    S.achAll = !S.achAll;
+    return void renderAch();
+  }
   const o = e.target.closest("[data-open]");
   if (o) go("game", Number(o.dataset.open));
 });
@@ -554,34 +606,95 @@ function renderGame() {
         <h1 class="game-title display">${esc(g.name)}</h1>
         <div class="actions" id="actions"></div>
         <div id="launch-err"></div>
+        <dl class="facts" id="facts"></dl>
       </div>
     </header>
-    <div class="game-body">
-      <section class="panel wide rise" aria-labelledby="h-label">
-        <div class="panel-head"><h2 id="h-label">Этикетка</h2><span class="caption">APPID ${g.appid}</span></div>
+    <div class="game-body" id="game-body">
+      <section class="panel full" id="ach" aria-labelledby="h-ach" hidden></section>
+    </div>
+    ${sheetHtml(g)}`;
+  $("#back").onclick = () => go("library");
+  followBackdrop();
+  wireSheet(g);
+  refreshGame();
+  renderProfile();
+  renderCloud();
+  renderLog();
+  renderStats();
+}
+
+/* Подробности: этикетка, профиль, файлы облака и лог — в боковой панели, по кнопке «⋯».
+   Панель в DOM всегда (закрыта — уехала вправо): лог и облако обновляются и без неё на экране. */
+function sheetHtml(g) {
+  return `
+    <div class="sheet-back" id="sheet-back"></div>
+    <aside class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="h-sheet" tabindex="-1" inert>
+      <div class="sheet-head">
+        <h2 id="h-sheet">Подробности</h2>
+        <span class="caption grow">APPID ${g.appid}</span>
+        <button class="icon-btn" id="sheet-close" aria-label="Закрыть">${I.x}</button>
+      </div>
+      <section class="sheet-sec" aria-labelledby="h-label">
+        <h3 id="h-label" class="sr">Этикетка</h3>
         <dl class="label" id="label"></dl>
       </section>
-      <section class="panel rise" aria-labelledby="h-profile" id="profile"></section>
       ${
         g.installed
-          ? `<section class="panel wide rise" aria-labelledby="h-cloud">
-              <div class="panel-head"><h2 id="h-cloud">Steam Cloud</h2>
+          ? `<section class="sheet-sec" id="sec-cloud" aria-labelledby="h-cloud">
+              <div class="panel-head"><h3 id="h-cloud">Steam Cloud</h3>
                 <button class="icon-btn" id="cloud-refresh" aria-label="Обновить статус облака">${I.refresh}</button></div>
               <div id="cloud" class="section" style="gap:16px"></div>
             </section>`
           : ""
       }
-      <div id="log-slot" class="panel full" hidden></div>
-    </div>`;
-  $("#back").onclick = () => go("library");
+      <section class="sheet-sec" id="profile" aria-labelledby="h-profile"></section>
+      <section class="sheet-sec" id="log-slot" hidden></section>
+    </aside>`;
+}
+
+function wireSheet(g) {
+  $("#sheet-close").onclick = () => closeSheet();
+  $("#sheet-back").onclick = () => closeSheet();
   const r = $("#cloud-refresh");
   if (r) r.onclick = () => loadCloud(g.appid);
-  followBackdrop();
-  refreshGame();
-  renderProfile();
-  renderCloud();
-  renderLog();
+  if (S.sheet) openSheet(S.sheet === true ? null : S.sheet, true);
 }
+
+// `focus` — к какому разделу прокрутить: "cloud", "log".
+function openSheet(focus = null, instant = false) {
+  const sh = $("#sheet");
+  if (!sh) return;
+  S.sheet = focus || true;
+  if (!sh.classList.contains("open")) openSheet.opener = document.activeElement;
+  if (instant) sh.classList.add("instant");
+  sh.inert = false;
+  sh.classList.add("open");
+  $("#sheet-back").classList.add("open");
+  $("#details")?.setAttribute("aria-expanded", "true");
+  const target = focus === "log" ? $("#log-slot") : focus === "cloud" ? $("#sec-cloud") : null;
+  if (target && !target.hidden) target.scrollIntoView({ block: "start", behavior: instant ? "auto" : "smooth" });
+  if (focus === "log") {
+    const log = $("#log");
+    if (log) log.scrollTop = log.scrollHeight;
+  }
+  if (!instant) sh.focus({ preventScroll: true });
+  if (instant) requestAnimationFrame(() => sh.classList.remove("instant"));
+}
+
+function closeSheet() {
+  const sh = $("#sheet");
+  S.sheet = null;
+  if (!sh?.classList.contains("open")) return;
+  sh.classList.remove("open");
+  sh.inert = true;
+  $("#sheet-back").classList.remove("open");
+  $("#details")?.setAttribute("aria-expanded", "false");
+  (openSheet.opener?.isConnected ? openSheet.opener : $("#details"))?.focus();
+}
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && S.sheet && !document.querySelector(".menu")) closeSheet();
+});
 
 // Арт шапки при прокрутке уезжает вверх медленнее страницы, растёт и гаснет, открывая
 // размытую копию на всё окно — фон под панелями остаётся цветом игры, а не чёрным.
@@ -612,6 +725,7 @@ function refreshGame() {
   if (S.view !== "game" || !$("#actions")) return;
   renderActions();
   renderLabel();
+  renderFacts();
 }
 
 function renderActions() {
@@ -627,7 +741,7 @@ function renderActions() {
   } else if (t?.running) {
     // Полоска уже на месте — только обновить, иначе каждое событие перезапускает её появление.
     const cur = el.querySelector(".stages-btn");
-    if (cur) return void updateStages(cur, t);
+    if (cur && el.dataset.html?.startsWith(STAGES_MARK)) return void updateStages(cur, t);
     main_ = stagesBlock(t);
   } else {
     main_ = `<button class="btn btn-primary launch" data-play="${g.appid}">${I.play}Играть</button>`;
@@ -637,14 +751,31 @@ function renderActions() {
     g.installed && g.bridge === "notBuilt"
       ? `<button class="btn btn-ghost" id="build" ${building ? "disabled" : ""}>${I.bridge}${building ? "Собираю мост" : "Собрать мост"}</button>`
       : "";
-  el.innerHTML = main_ + bridge + libraryActions(g);
-  wireLibraryActions(g);
-  const b = $("#build");
-  if (b) b.onclick = () => buildBridge(g.appid);
+  const details = `<button class="btn btn-ghost btn-icon" id="details" aria-label="Подробности" title="Подробности" aria-haspopup="dialog" aria-expanded="${S.sheet ? "true" : "false"}">${I.dots}</button>`;
+  const html = main_ + bridge + libraryActions(g) + details;
+  // Опрос загрузок зовёт это раз в секунду: без изменений DOM не трогаем, иначе кнопки
+  // теряют наведение и фокус.
+  if (el.dataset.html !== html) {
+    const had = document.activeElement?.id;
+    el.innerHTML = html;
+    el.dataset.html = html;
+    wireLibraryActions(g);
+    const b = $("#build");
+    if (b) b.onclick = () => buildBridge(g.appid);
+    $("#details").onclick = () => (S.sheet ? closeSheet() : openSheet());
+    if (had && el.querySelector(`#${had}`)) $(`#${had}`).focus();
+  }
   const err = $("#launch-err");
   if (err) {
     const fail = t && !t.running && t.ok === false && t.error;
-    err.innerHTML = fail ? `<div class="notice" style="max-width:560px">${I.alert}<span class="grow">${esc(t.error)}</span></div>` : "";
+    const html = fail
+      ? `<div class="notice" style="max-width:560px">${I.alert}<span class="grow">${esc(t.error)}</span>
+          <button class="btn btn-sm" data-sheet="log">Лог</button></div>`
+      : "";
+    if (err.dataset.html !== html) {
+      err.innerHTML = html;
+      err.dataset.html = html;
+    }
   }
 }
 
@@ -658,9 +789,11 @@ function stagesState(t) {
   return { label, num: Math.max(1, cur + 1), cls: STAGES.map((s) => `seg ${st(s) || ""}`) };
 }
 
+const STAGES_MARK = `<div class="stages-btn"`;
+
 function stagesBlock(t) {
   const { label, num, cls } = stagesState(t);
-  return `<div class="stages-btn" role="status" aria-live="polite">
+  return `${STAGES_MARK} role="status" aria-live="polite">
     <span class="stages-top"><span class="stage-label">${esc(label)}</span><span class="mono stage-num" aria-label="этап ${num} из 4">${num}/4</span></span>
     <span class="segs" aria-hidden="true">${cls.map((c) => `<span class="${c}"><i></i></span>`).join("")}</span></div>`;
 }
@@ -674,6 +807,113 @@ function updateStages(el, t) {
   n.setAttribute("aria-label", `этап ${num} из 4`);
   // Класс меняем только при смене этапа: анимация набора не начинается заново.
   el.querySelectorAll(".seg").forEach((s, i) => s.className !== cls[i] && (s.className = cls[i]));
+}
+
+/* ---------- то, что важно игроку: время, последний запуск, достижения ---------- */
+
+function fact(label, value, extra = "", attrs = "") {
+  return `<div class="fact" ${attrs}><dt>${label}</dt><dd>${value}</dd>${extra}</div>`;
+}
+
+function renderFacts() {
+  const el = $("#facts");
+  const g = game(S.appid);
+  if (!el || !g) return;
+  const st = S.stats[g.appid];
+  const pt = st?.data?.playtime;
+  const ach = st?.data?.achievements;
+  const items = [];
+  if (S.account && (!st || (st.loading && !st.data))) {
+    items.push(...[96, 128, 112].map((w) => `<div class="fact" aria-hidden="true"><div class="skel-line" style="width:${w}px;height:12px"></div><div class="skel-line" style="width:${w - 24}px;height:24px"></div></div>`));
+  }
+  if (pt) {
+    const two = pt.minutes2weeks ? `<span class="fact-sub">${hours(pt.minutes2weeks)} за 2 недели</span>` : "";
+    items.push(fact("В игре", esc(hours(pt.minutes)), two));
+    const live = running(`launch:${g.appid}`);
+    items.push(fact("Последний запуск", live ? "сейчас" : pt.lastPlayed ? esc(ago(pt.lastPlayed)) : "никогда"));
+  }
+  if (ach) {
+    const p = ach.total ? ach.unlocked / ach.total : 0;
+    items.push(
+      `<div class="fact"><dt>Достижения</dt><dd><button class="fact-btn" data-scroll-ach>${ach.unlocked}<span class="of"> из ${ach.total}</span></button></dd>
+        <span class="bar fact-bar" role="progressbar" aria-label="Открыто достижений" aria-valuenow="${Math.round(p * 100)}" aria-valuemin="0" aria-valuemax="100"><i style="transform:scaleX(${p})"></i></span></div>`,
+    );
+  }
+  if (g.installed) {
+    const c = S.cloud[g.appid]?.data?.summary || g.cloud.state;
+    const last = S.cloud[g.appid]?.data?.status.lastSync ?? g.cloud.lastSync;
+    const word = { synced: last ? ago(last) : "синхронизировано", pending: "есть изменения", conflict: "конфликт", never: "не синхронизировано" }[c];
+    if (word)
+      items.push(fact("Облако", `<button class="fact-btn small" data-sheet="cloud">${dot(CLOUD[c].dot)}${esc(word)}</button>`));
+  } else if (g.sizeBytes) {
+    items.push(fact("Размер", esc(size(g.sizeBytes))));
+  }
+  const html = items.join("");
+  if (el.dataset.html === html) return;
+  el.dataset.html = html;
+  el.innerHTML = html;
+  el.hidden = !items.length;
+}
+
+main.addEventListener("click", (e) => {
+  if (e.target.closest("[data-scroll-ach]")) $("#ach")?.scrollIntoView({ behavior: "smooth", block: "start" });
+});
+
+function renderStats() {
+  renderFacts();
+  renderAch();
+}
+
+const ACH_FIRST = 12;
+
+// Открытые — свежие первыми, закрытые — сначала те, что открыли больше игроков.
+function sortAch(items) {
+  const open = items.filter((a) => a.unlocked).sort((a, b) => (b.unlockedAt || 0) - (a.unlockedAt || 0));
+  const shut = items.filter((a) => !a.unlocked).sort((a, b) => (b.globalPercent ?? -1) - (a.globalPercent ?? -1));
+  return [...open, ...shut];
+}
+
+function achItem(a, i) {
+  const secret = !a.unlocked && a.hidden;
+  const icon = a.unlocked ? a.icon : a.iconGray || a.icon;
+  const rare = a.globalPercent != null && a.globalPercent < 10;
+  const meta = a.unlocked
+    ? [a.unlockedAt ? day(a.unlockedAt) : null, rare ? `${pct(a.globalPercent)} игроков` : null].filter(Boolean).join(" · ") || "открыто"
+    : a.globalPercent != null
+      ? `${pct(a.globalPercent)} игроков`
+      : "";
+  return `<li class="ach ${a.unlocked ? "" : "locked"} ${rare && a.unlocked ? "rare" : ""} rise" style="animation-delay:${Math.min(i, 12) * 20}ms">
+    <span class="ach-ico" aria-hidden="true">${I.trophy}${icon ? `<img src="${esc(icon)}" alt="" loading="lazy">` : ""}</span>
+    <span class="ach-text">
+      <b>${secret ? "Скрытое достижение" : esc(a.name)}</b>
+      ${!secret && a.description ? `<span class="ach-desc">${esc(a.description)}</span>` : ""}
+      ${meta ? `<span class="ach-meta">${a.unlocked ? "" : '<span class="sr">Не открыто. </span>'}${esc(meta)}</span>` : ""}
+    </span></li>`;
+}
+
+function renderAch() {
+  const el = $("#ach");
+  const g = game(S.appid);
+  if (!el || !g) return;
+  const ach = S.stats[g.appid]?.data?.achievements;
+  if (!ach || !ach.items.length) {
+    el.hidden = true;
+    el.innerHTML = "";
+    delete el.dataset.html;
+    return;
+  }
+  const items = sortAch(ach.items);
+  const shown = S.achAll ? items : items.slice(0, ACH_FIRST);
+  const all = ach.unlocked === ach.total;
+  const html = `
+    <div class="panel-head"><h2 id="h-ach">Достижения</h2>
+      <span class="caption grow">${all ? "ВСЕ ОТКРЫТЫ" : `${ach.unlocked} ИЗ ${ach.total}`}</span>
+      ${items.length > ACH_FIRST ? `<button class="btn btn-sm btn-quiet" id="ach-all" aria-expanded="${S.achAll}">${S.achAll ? "Свернуть" : `Все ${items.length}`}</button>` : ""}</div>
+    <ul class="ach-list">${shown.map(achItem).join("")}</ul>`;
+  el.hidden = false;
+  if (el.dataset.html === html) return;
+  el.dataset.html = html;
+  el.innerHTML = html;
 }
 
 function renderLabel() {
@@ -719,7 +959,7 @@ function renderProfile() {
   if (!el) return;
   const p = S.settings?.profile;
   el.innerHTML = `
-    <div class="panel-head"><h2 id="h-profile">Профиль</h2><span class="caption">ДЛЯ ВСЕХ ИГР</span></div>
+    <div class="panel-head"><h3 id="h-profile">Профиль</h3><span class="caption">ДЛЯ ВСЕХ ИГР</span></div>
     <div class="tray">
       ${PROFILE.map(([k, name]) => `<label class="toggle"><span>${name}</span>${switchHtml(k, name, p?.[k])}</label>`).join("")}
     </div>`;
@@ -785,7 +1025,7 @@ function renderLog() {
     return;
   }
   slot.hidden = false;
-  slot.innerHTML = `<div class="panel-head"><h2>Лог запуска</h2></div><div class="log" id="log" tabindex="0" aria-label="Лог запуска">${log.map(logLine).join("")}</div>`;
+  slot.innerHTML = `<div class="panel-head"><h3 id="h-log">Лог запуска</h3></div><div class="log" id="log" tabindex="0" aria-labelledby="h-log">${log.map(logLine).join("")}</div>`;
   $("#log").scrollTop = 1e9;
 }
 
@@ -1019,11 +1259,13 @@ async function saveSettings(change, key) {
   }
   const route = S.info.route || "";
   const [r, id, y] = route.split("/");
-  go(r === "game" || r === "play" ? "library" : r === "setup" || r === "settings" || r === "downloads" ? r : "library");
+  go(r === "game" || r === "play" || r === "details" ? "library" : r === "setup" || r === "settings" || r === "downloads" ? r : "library");
   await Promise.all([loadGames(), loadEnv(), loadAccount()]);
-  if (r === "game" || r === "play") {
+  if (r === "game" || r === "play" || r === "details") {
     go("game", Number(id));
     if (r === "play") play(Number(id));
+    // details/<appid> — сразу с открытыми подробностями.
+    if (r === "details") openSheet(null, true);
     // game/<appid>/<px> — сразу прокрутить: для снимков фона при прокрутке.
     if (y) requestAnimationFrame(() => (main.scrollTop = Number(y)));
   } else if (!r && S.env && !S.env.ready && S.env.env.checks.some((c) => !c.ok && c.id !== "steam")) {

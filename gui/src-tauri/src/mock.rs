@@ -6,6 +6,10 @@
 //!
 //! Библиотеки: встроенная, внешний SSD (по умолчанию) и отключённый архив с Hollow Knight.
 //! Очередь: Elden Ring качается на SSD, Baldur's Gate 3 ждёт; загрузку ведёт свой поток.
+//! `CARAFE_MOCK_QUEUE=empty` — очередь пуста; `=finishing` — Elden Ring докачивается за секунды.
+//!
+//! После входа в Steam (`CARAFE_MOCK_STEAM=in`) у установленных игр есть время в игре и
+//! достижения (`STATS`).
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -84,6 +88,206 @@ const OWNED_EXTRA: &[(AppId, &str, f64, bool)] = &[
     (1817070, "Marvel's Spider-Man Remastered", 75.0, true),
     // Только Mac/Linux: ставить нечего.
     (1, "Только для Mac (демо)", 0.0, false),
+];
+
+/// (appid, минут всего, за 2 недели, сколько назад запускали, достижений всего, открыто)
+type MockStats = (AppId, u64, u64, Option<u64>, u32, u32);
+const STATS: &[MockStats] = &[
+    (3405340, 754, 95, Some(2 * HOUR), 24, 9),
+    (1145350, 3120, 0, Some(40 * DAY), 49, 31),
+    (2379780, 2410, 310, Some(3 * DAY), 30, 8),
+    (1794680, 1880, 0, Some(9 * DAY), 0, 0),
+    (413150, 0, 0, None, 40, 0),
+    (367520, 4290, 0, Some(5 * DAY), 63, 63),
+];
+
+/// Публичная схема достижений Megabonk из Steam (названия, иконки, доля игроков): демо с
+/// настоящими картинками. (название, описание, иконка, серая иконка, %)
+const MEGABONK_ACH: &[(&str, &str, &str, &str, f64)] = &[
+    (
+        "Battery",
+        "Upgrade Cooldown Tome to Level 5",
+        "4c378fd9006af550a537466bc7a9ff876c05ef4c.jpg",
+        "0b6b4bf4f9d602343ca56675d27c0ed8b1a18505.jpg",
+        86.4,
+    ),
+    (
+        "Boss Buster",
+        "Defeat a Stage Boss in under 30 seconds",
+        "c1939ca13ee36238e54bf67491d5fe193c32e667.jpg",
+        "1eb8a411706dea943e12a2299180c44d49f510a9.jpg",
+        80.8,
+    ),
+    (
+        "Cactus",
+        "Kill 100 cactus enemies with Thorns damage",
+        "babb79a9a15b3bb5921ea39c89525247c99e46ae.jpg",
+        "90142ee4cc135e16d787c9c393e4b954d91cf94e.jpg",
+        4.4,
+    ),
+    (
+        "Cursed Doll",
+        "Die 10 times",
+        "e5338e8c47af9398344fbbbb77050c2061460b86.jpg",
+        "8b2f3f99e73abb31f6e1e10ceed6534b9a3d0c5c.jpg",
+        86.1,
+    ),
+    (
+        "Forbidden Juice",
+        "Crit 100 times",
+        "2a8ca52617ed0164206863d6517d971985b871a7.jpg",
+        "9c6e12390dcdf9609f4630cd227633e71c4e4ae6.jpg",
+        95.3,
+    ),
+    (
+        "Brass Knuckles",
+        "Kill 5 000 enemies with the Sword",
+        "c9cdd7b9a8725111875fcc84407c2aacc254119a.jpg",
+        "f9843271304a929c25fd90da2d9d5cbd267797ed.jpg",
+        56.5,
+    ),
+    (
+        "Bob (Dead)",
+        "Survive the Final Swarm for 2 minues",
+        "1c283d91c5119bc8d4ef3e4a27b45c0b4850e581.jpg",
+        "f4597556aff71c7fd63100e3f6289af1067b99e4.jpg",
+        60.1,
+    ),
+    (
+        "Anvil",
+        "Complete 3 Challenges",
+        "e10a00d616712e5f7fa362e7fdf8ec16f87f999c.jpg",
+        "5077069d8dac9abf522a7470e4e7a1a9a4925c76.jpg",
+        37.1,
+    ),
+    (
+        "Ghost",
+        "Survive the Final Swarm for 60s",
+        "322999a0920ffc6ddf67cd0a505f333cf80ab267.jpg",
+        "17919ba5484b96dde3c4013d9b76addff3116688.jpg",
+        96.0,
+    ),
+    (
+        "Ice Crystal",
+        "Kill 50 enemies with the Frostwalker",
+        "f54d74c52cf0f8f195501c56690983f499218ace.jpg",
+        "9196cfd7258d16c839f10dffcf840eb3ffc0e764.jpg",
+        44.2,
+    ),
+    (
+        "Key",
+        "Purchase 25 chests",
+        "a19bdb3e6c435b084de0aec0c160922e128d7830.jpg",
+        "2e14e22686bdca5d74da3828a41b65fe7dfdd856.jpg",
+        91.5,
+    ),
+    (
+        "Skuleg",
+        "Obtain 40% Difficulty",
+        "1e78c9c9fa565f9ed94a25a5b8a939805c710a23.jpg",
+        "68bf96a306e9a4c2499c41f9fb53470b3200e860.jpg",
+        44.6,
+    ),
+    (
+        "Tactical Glasses",
+        "Defeat a Miniboss in 25s",
+        "f9b459e73aba093d2bf22e713e32629fd8a264f5.jpg",
+        "e623801917741d2ad8320cd253738ca89e6f3f53.jpg",
+        94.3,
+    ),
+    (
+        "Turbo Socks",
+        "Upgrade Agility Tome to Level 5",
+        "b598122617be7a72928557f4f2cf5c194b80c8a4.jpg",
+        "61484582f89fe4300bcca7ee57f1a249b57d14e2.jpg",
+        66.2,
+    ),
+    (
+        "Demonic Blade",
+        "Heal for 350 HP using Lifesteal",
+        "8b915dca7fdf54f1fa9717562d5ab7a59d280e6d.jpg",
+        "c4c97240021a771c7cc5d57dd1a88e88ec20872e.jpg",
+        82.4,
+    ),
+    (
+        "Demonic Blood",
+        "Increase Max HP with Blood Magic 400 times",
+        "74c77197d6dad9d4af3313eaa28b05a8d9239132.jpg",
+        "4336b3df92917f0d93dd1d1c5a0db451bdfdcb05.jpg",
+        19.4,
+    ),
+    (
+        "Echo Shard",
+        "Upgrade XP Tome to Level 8",
+        "f8c35747a27ac21aea18e4f186787818e9f59547.jpg",
+        "358d06f55700b5b98cdd19aea34f6be23fff1510.jpg",
+        54.9,
+    ),
+    (
+        "Golden Sneakers",
+        "Break 150 pots",
+        "35d3decef0a81532136f54cee922de37ce941ab9.jpg",
+        "d3ca3e2e027cf0a5197ab6130dc8ea191a3a1802.jpg",
+        82.8,
+    ),
+    (
+        "Idle Juice",
+        "Kill 500 enemies while standing still",
+        "398bcb80252ebfd868b3c0027df1d876f49d0363.jpg",
+        "71f5657cc162610037fbb9e71c381bfc95145030.jpg",
+        85.2,
+    ),
+    (
+        "Kevin",
+        "Obtain 3 Leeching Crystal in a run",
+        "edd5813740a51842aea14a94b6752d1ff254a1f6.jpg",
+        "fe488c5c7cf49f5111c9aba9a0878e41fad49d14.jpg",
+        14.6,
+    ),
+    (
+        "Leeching Crystal",
+        "Upgrade Regen Tome to Level 8",
+        "be15f49209540f650abccb1710087e6a1b30df73.jpg",
+        "1f3da837a4b503a817d83998fcc95a8a2b624f61.jpg",
+        31.3,
+    ),
+    (
+        "Poison Gloves",
+        "Use a Microwave to duplicate Moldy Cheese 3 times in a row",
+        "b6d6f82824402b3baa6d765cf0ce8abc50b4f2c7.jpg",
+        "4aebe34ea5a5439bacf2f1409562bf19dfbb85cd.jpg",
+        33.6,
+    ),
+    (
+        "Cursed Gloves",
+        "Get the Cursed Tome to level 10",
+        "4b980b6f8f4cae604f8e04a0db7e7e95149ac38a.jpg",
+        "8aebf3c75a34bbb66311446dbe153c715369a8b2.jpg",
+        23.0,
+    ),
+    (
+        "Demonic Soul",
+        "Reach Level 30 as Calcium",
+        "44f3b615e0ca772d9dd28cc47ddb086e16099bfe.jpg",
+        "f9aab199558186924766e0661cfd868e512c2690.jpg",
+        65.4,
+    ),
+];
+
+/// Названия для демо-достижений: по кругу, с номером, если не хватило.
+const ACH_NAMES: &[(&str, &str)] = &[
+    ("Первая кровь", "Победить первого врага"),
+    ("Без единой царапины", "Пройти уровень, не получив урона"),
+    ("Коллекционер", "Собрать 100 предметов"),
+    ("Марафонец", "Продержаться 30 минут"),
+    ("Всё и сразу", "Открыть все улучшения одного оружия"),
+    ("Скупой рыцарь", "Накопить 10 000 золота"),
+    ("Пацифист", "Пройти уровень, никого не убив"),
+    ("Ночная смена", "Сыграть после полуночи"),
+    ("Мастер на все руки", "Открыть всех персонажей"),
+    ("На волоске", "Победить с 1 очком здоровья"),
+    ("Охотник", "Победить 1000 врагов"),
+    ("Исследователь", "Открыть все области карты"),
 ];
 
 const MOCK_QR: [&str; 2] = [
@@ -307,8 +511,20 @@ impl MockBackend {
                 0.0,
             ),
         ];
-        let jobs = if fresh {
+        let queue = std::env::var("CARAFE_MOCK_QUEUE").unwrap_or_default();
+        let jobs = if fresh || queue == "empty" {
             Vec::new()
+        } else if queue == "finishing" {
+            vec![MockJob {
+                appid: 1245620,
+                library: 1,
+                kind: DownloadKind::Install,
+                state: DownloadState::Active,
+                stage: DownloadStage::Downloading,
+                done: 48_800_000_000,
+                total: 49_000_000_000,
+                error: None,
+            }]
         } else {
             vec![
                 MockJob {
@@ -856,6 +1072,64 @@ impl Backend for MockBackend {
         Ok(out)
     }
 
+    fn game_stats(&self, appid: AppId, _fresh: bool) -> Result<Option<GameStats>> {
+        if self.lock().account.is_none() {
+            return Ok(None);
+        }
+        wait(600);
+        let Some(&(_, minutes, two_weeks, ago, total, unlocked)) =
+            STATS.iter().find(|s| s.0 == appid)
+        else {
+            return Ok(Some(GameStats::default()));
+        };
+        let t = now() as i64;
+        let ago = ago.map(|a| t - a as i64);
+        let items = (0..total)
+            .map(|i| {
+                let (name, desc) = ACH_NAMES[i as usize % ACH_NAMES.len()];
+                let lap = i as usize / ACH_NAMES.len();
+                let open = i < unlocked;
+                let real = (appid == 3405340).then(|| MEGABONK_ACH.get(i as usize)).flatten();
+                let icon = |h: &str| {
+                    format!("https://cdn.cloudflare.steamstatic.com/steamcommunity/public/images/apps/{appid}/{h}")
+                };
+                // Последнее из открытых — в последний запуск, остальные — раньше, через день-два.
+                let at = ago.filter(|_| open).map(|last| last - (unlocked - 1 - i) as i64 * 37 * HOUR as i64);
+                let rare = real.map_or(100.0 * 0.82_f64.powi(i as i32 + 1), |r| r.4);
+                Achievement {
+                    id: format!("ACH_{i:02}"),
+                    name: match real {
+                        Some(r) => r.0.into(),
+                        None if lap > 0 => format!("{name} {}", lap + 1),
+                        None => name.into(),
+                    },
+                    description: match real {
+                        Some(r) => Some(r.1.into()),
+                        None => (i % 7 != 6).then(|| desc.into()),
+                    },
+                    icon: real.map(|r| icon(r.2)),
+                    icon_gray: real.map(|r| icon(r.3)),
+                    hidden: real.is_none() && i % 7 == 6,
+                    unlocked: open,
+                    unlocked_at: at,
+                    global_percent: Some((rare * 10.0).round() / 10.0),
+                }
+            })
+            .collect();
+        Ok(Some(GameStats {
+            playtime: (minutes > 0 || ago.is_some()).then_some(Playtime {
+                minutes,
+                minutes_2weeks: two_weeks,
+                last_played: ago,
+            }),
+            achievements: (total > 0).then_some(Achievements {
+                total,
+                unlocked,
+                items,
+            }),
+        }))
+    }
+
     fn install(&self, appid: AppId, library: Option<&Path>) -> Result<()> {
         let mut st = self.lock();
         let lib = match library {
@@ -1067,7 +1341,9 @@ fn download_loop(state: std::sync::Weak<Mutex<State>>) {
                 }
             }
             DownloadStage::Verifying | DownloadStage::Allocating => {
-                j.done = (j.done + (MOCK_SPEED * 8.0 * dt) as u64).min(j.total);
+                // Проверка — секунды, а не минуты: на демо её не ждут.
+                let speed = (MOCK_SPEED * 8.0).max(j.total as f64 / 6.0);
+                j.done = (j.done + (speed * dt) as u64).min(j.total);
                 if j.done >= j.total {
                     j.stage = DownloadStage::Committing;
                 }

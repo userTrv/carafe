@@ -25,6 +25,8 @@ use carafe_core::{
 use crate::backend::*;
 
 const CLOUD_TIMEOUT: Duration = Duration::from_secs(90);
+/// Сколько верить времени в игре и достижениям, прежде чем снова спросить Steam.
+const STATS_TTL: Duration = Duration::from_secs(10 * 60);
 
 pub struct CliBackend {
     script: PathBuf,
@@ -34,6 +36,8 @@ pub struct CliBackend {
     queue: Arc<Queue>,
     worker: Mutex<Option<thread::JoinHandle<()>>>,
     shutdown: Arc<AtomicBool>,
+    /// Время в игре и достижения: каждый запрос — это хелпер и вход в Steam, секунды.
+    stats: Mutex<HashMap<AppId, (Instant, GameStats)>>,
 }
 
 impl CliBackend {
@@ -50,8 +54,12 @@ impl CliBackend {
         let home = std::env::var_os("CARAFE_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| home_dir().join("Library/Application Support/carafe"));
-        let soju = soju
-            .unwrap_or_else(|| checkout.parent().map(|p| p.join("soju")).unwrap_or_default());
+        let soju = soju.unwrap_or_else(|| {
+            checkout
+                .parent()
+                .map(|p| p.join("soju"))
+                .unwrap_or_default()
+        });
         let mut config = Config::from_env().map_err(core_err)?;
         config.home = home.clone();
         let core = Carafe::new(config).with_logger(|_| {});
@@ -64,6 +72,7 @@ impl CliBackend {
             queue,
             worker: Mutex::new(None),
             shutdown: Arc::new(AtomicBool::new(false)),
+            stats: Mutex::new(HashMap::new()),
         })
     }
 
@@ -623,6 +632,35 @@ impl Backend for CliBackend {
         self.core.steam_logout().map(|_| ()).map_err(core_err)
     }
 
+    fn game_stats(&self, appid: AppId, fresh: bool) -> Result<Option<GameStats>> {
+        if self.core.steam_account().map_err(core_err)?.is_none() {
+            self.stats.lock().expect("stats").clear();
+            return Ok(None);
+        }
+        let cached = self.stats.lock().expect("stats").get(&appid).cloned();
+        if let Some((at, st)) = &cached
+            && !fresh
+            && at.elapsed() < STATS_TTL
+        {
+            return Ok(Some(st.clone()));
+        }
+        match self.core.steam_game_stats(appid, "russian") {
+            Ok(st) => {
+                let st = game_stats_from(st);
+                self.stats
+                    .lock()
+                    .expect("stats")
+                    .insert(appid, (Instant::now(), st.clone()));
+                Ok(Some(st))
+            }
+            // Нет сети или Steam не ответил — лучше вчерашние цифры, чем пустой экран.
+            Err(e) => match cached {
+                Some((_, st)) => Ok(Some(st)),
+                None => Err(core_err(e)),
+            },
+        }
+    }
+
     fn owned_games(&self) -> Result<Vec<OwnedGame>> {
         Ok(self
             .core
@@ -1053,6 +1091,35 @@ fn sha256(p: &Path) -> Option<String> {
         cache.lock().ok().map(|mut c| c.insert(key, sha.clone()));
         sha
     })
+}
+
+fn game_stats_from(st: carafe_core::GameStats) -> GameStats {
+    GameStats {
+        playtime: st.playtime.map(|p| Playtime {
+            minutes: p.minutes,
+            minutes_2weeks: p.minutes_2weeks,
+            last_played: p.last_played,
+        }),
+        achievements: st.achievements.map(|a| Achievements {
+            total: a.total,
+            unlocked: a.unlocked,
+            items: a
+                .achievements
+                .into_iter()
+                .map(|x| Achievement {
+                    id: x.id,
+                    name: x.name,
+                    description: x.description,
+                    icon: x.icon,
+                    icon_gray: x.icon_gray,
+                    hidden: x.hidden,
+                    unlocked: x.unlocked,
+                    unlocked_at: x.unlocked_at,
+                    global_percent: x.global_percent,
+                })
+                .collect(),
+        }),
+    }
 }
 
 #[cfg(test)]

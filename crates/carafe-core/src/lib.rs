@@ -32,7 +32,7 @@ use std::process::Command;
 use std::sync::Arc;
 
 pub use account::{AutoDownloader, SteamKitDownloader};
-pub use account::{Keychain, MemoryStore, OwnedGame, TokenStore};
+pub use account::{GameStats, Keychain, MemoryStore, OwnedGame, TokenStore};
 pub use appinfo::{AppInfo, CloudRule};
 pub use bridge::{BridgeState, BridgeTarget};
 pub use cloud::{CloudAction, CloudEntry, CloudMode, CloudReport, CloudSummary};
@@ -49,7 +49,10 @@ pub use library::{DiskSpace, GameLocation, LibraryFolder, LibraryInfo, MoveKind,
 pub use process::{Log, exit_code};
 pub use queue::{Job, JobKind, JobState, Queue, QueueEvent};
 pub use release::{Manifest, Release};
-pub use steamclient::{Account, AppDepots, Credentials, DepotEvent, DownloadResult, LoginEvent, OwnedApp};
+pub use steamclient::{
+    Account, Achievement, Achievements, AppDepots, Credentials, DepotEvent, DownloadResult, LoginEvent, OwnedApp,
+    Playtime,
+};
 
 pub type Logger = Arc<dyn Fn(Log) + Send + Sync>;
 

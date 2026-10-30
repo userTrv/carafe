@@ -103,6 +103,8 @@ sealed partial class Session : IAsyncDisposable
         "app_info" => AppInfo(req.UInt("appid"), ct),
         "download" => Download(req, ct),
         "logout" => Logout(req, ct),
+        "playtime" => Playtime(ct),
+        "achievements" => Achievements(req, ct),
         _ => throw new HelperException("bad_request", $"неизвестная команда {req.Cmd}"),
     };
 

@@ -127,6 +127,43 @@
 
 /* ---------- загрузки ---------- */
 
+/* Кнопка загрузок в панели появляется, только когда есть что показать. */
+.dl-pill {
+  gap: 8px;
+  animation: fade var(--t-fade) both;
+}
+
+.dl-pill .meter {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.dl-ico {
+  display: inline-grid;
+  color: var(--text-2);
+}
+
+.dl-ico.ok {
+  color: var(--ok);
+}
+
+.dl-ico.warn,
+.dl-pill .tab-count {
+  color: var(--accent);
+}
+
+.dl-nums {
+  display: flex;
+  gap: 12px;
+}
+
+#dl-done:not(:empty) {
+  margin-top: -32px;
+}
+
+.dl-row.done .dl-body {
+  gap: 4px;
+}
+
 .dl-list {
   display: flex;
   flex-direction: column;
