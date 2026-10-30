@@ -61,12 +61,19 @@ sealed class AppDepots
         string? BetaKey);
 
     /// Есть ли нативная сборка для macOS: `common/oslist` с macos и депо именно под macOS, которое
-    /// ставится (есть манифест ветки, своё или купленное DLC). `ownedDepots` — депо из лицензий
-    /// аккаунта: пустой набор не проверяется (анонимно или пакеты без списка депо).
-    public static bool HasMac(KeyValue kv, AppDepots mac, IReadOnlySet<uint> ownedDepots) =>
-        Os.In(kv["common"]["oslist"].AsString() ?? "", Os.MacOS)
-        && mac.Install.Any(d => Os.In(d.OsList, Os.MacOS)
-                                && (ownedDepots.Count == 0 || ownedDepots.Contains(d.Id)));
+    /// ставится (есть манифест ветки, своё или купленное DLC). Либо у игры вообще нет депо под
+    /// macOS, но есть вариант запуска под macOS: тогда `.app` лежит в общем депо (DDLC, игры на
+    /// Ren'Py). `ownedDepots` — депо из лицензий аккаунта: пустой набор не проверяется (анонимно
+    /// или пакеты без списка депо).
+    public static bool HasMac(KeyValue kv, AppDepots mac, IReadOnlySet<uint> ownedDepots)
+    {
+        if (!Os.In(kv["common"]["oslist"].AsString() ?? "", Os.MacOS)) return false;
+        bool Owned(Depot d) => ownedDepots.Count == 0 || ownedDepots.Contains(d.Id);
+        if (mac.Install.Any(d => Os.In(d.OsList, Os.MacOS) && Owned(d))) return true;
+        return !mac.Depots.Any(d => Os.In(d.OsList, Os.MacOS))
+               && mac.LaunchEntries.Any(l => Os.In(l.OsList, Os.MacOS))
+               && mac.Install.Any(Owned);
+    }
 
     /// Варианты запуска под платформу и ветку: oslist пустой или с платформой, без чужих бет.
     public List<Launch> LaunchFor(string branch) => LaunchEntries
