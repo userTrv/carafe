@@ -413,6 +413,19 @@ async fn owned_games(app: State<'_, App>) -> Result<Value, String> {
     blocking(move || b.owned_games()).await.map(clean)
 }
 
+/// Время в игре и достижения; `null` — не вошли в Steam.
+#[tauri::command]
+async fn game_stats(
+    app: State<'_, App>,
+    appid: AppId,
+    fresh: Option<bool>,
+) -> Result<Value, String> {
+    let b = app.backend();
+    blocking(move || b.game_stats(appid, fresh.unwrap_or(false)))
+        .await
+        .map(clean)
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -466,6 +479,7 @@ fn main() {
             steam_login,
             steam_logout,
             owned_games,
+            game_stats,
         ])
         .build(tauri::generate_context!())
         .expect("carafe-gui")

@@ -411,6 +411,46 @@ pub struct OwnedGame {
     pub size_bytes: Option<u64>,
 }
 
+/// Что Steam знает об игре на этом аккаунте. Чего нет, то `None`: блок на экране не рисуется.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameStats {
+    pub playtime: Option<Playtime>,
+    pub achievements: Option<Achievements>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Playtime {
+    pub minutes: u64,
+    pub minutes_2weeks: u64,
+    /// Unix-время последнего запуска, секунды.
+    pub last_played: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Achievements {
+    pub total: u32,
+    pub unlocked: u32,
+    pub items: Vec<Achievement>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Achievement {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub icon: Option<String>,
+    pub icon_gray: Option<String>,
+    pub hidden: bool,
+    pub unlocked: bool,
+    pub unlocked_at: Option<i64>,
+    /// Доля игроков, открывших достижение, %.
+    pub global_percent: Option<f64>,
+}
+
 fn unsupported<T>() -> Result<T> {
     Err(BackendError::new("не поддерживается этим ядром"))
 }
@@ -510,6 +550,12 @@ pub trait Backend: Send + Sync {
     /// Все купленные игры аккаунта (сеть, несколько секунд).
     fn owned_games(&self) -> Result<Vec<OwnedGame>> {
         unsupported()
+    }
+
+    /// Время в игре и достижения (сеть, несколько секунд; реализация кэширует). `None` —
+    /// не вошли в Steam: экран просто не показывает эти блоки. `fresh` — мимо кэша.
+    fn game_stats(&self, _appid: AppId, _fresh: bool) -> Result<Option<GameStats>> {
+        Ok(None)
     }
 
     /// Выход из GUI: остановить фоновые загрузки (продолжатся при следующем запуске).

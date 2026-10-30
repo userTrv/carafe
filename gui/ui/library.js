@@ -46,18 +46,30 @@ async function loadLibs() {
 }
 
 let dlTimer = null;
+// Сколько держать в панели только что скачанную игру, если на «Загрузки» так и не зашли.
+const DL_RECENT_MS = 10 * 60 * 1000;
+S.dlRecent = []; // { appid, name, cover, at } — докачались, пока окно открыто
+S.dlCancelled = new Set();
+
 async function pollDownloads() {
   clearTimeout(dlTimer);
-  const before = S.downloads.map((d) => d.appid).join();
-  const was = JSON.stringify(S.downloads.map((d) => [d.appid, d.state]));
+  const prev = S.downloads;
+  const was = JSON.stringify(prev.map((d) => [d.appid, d.state]));
   try {
     S.downloads = await invoke("downloads");
   } catch (e) {
     S.downloads = [];
   }
-  const after = S.downloads.map((d) => d.appid).join();
+  const now = new Set(S.downloads.map((d) => d.appid));
+  const gone = prev.filter((d) => !now.has(d.appid));
+  for (const d of gone) {
+    // Убрали из очереди сами — не «готово».
+    if (S.dlCancelled.delete(d.appid)) continue;
+    S.dlRecent = [{ appid: d.appid, name: d.name, cover: d.cover, at: Date.now() }, ...S.dlRecent.filter((r) => r.appid !== d.appid)];
+  }
+  S.dlRecent = S.dlRecent.filter((r) => Date.now() - r.at < DL_RECENT_MS && !now.has(r.appid));
   // Загрузка закончилась или отменена — игры и место на дисках поменялись.
-  if (before && before !== after) {
+  if (gone.length) {
     loadGames();
     loadLibs();
   }
@@ -65,27 +77,52 @@ async function pollDownloads() {
   if (S.view === "downloads") renderDownloads();
   if (S.view === "game" && $("#actions")) renderActions();
   // Библиотека: сменилось состояние — пересобрать, иначе только проценты на месте.
-  const now = JSON.stringify(S.downloads.map((d) => [d.appid, d.state]));
-  if (S.view === "library" && now !== was && !document.querySelector(".menu")) renderLibraryBody();
+  const states = JSON.stringify(S.downloads.map((d) => [d.appid, d.state]));
+  if (S.view === "library" && states !== was && !document.querySelector(".menu")) renderLibraryBody();
   else if (S.view === "library") updateOwnedProgress();
   const busy = S.downloads.some((d) => d.state === "active");
   dlTimer = setTimeout(pollDownloads, busy || S.view === "downloads" ? 1000 : 4000);
 }
 
-// Вкладка «Загрузки»: число в очереди и мини-прогресс активной.
+// Ушли с «Загрузок» — готовые увидены, кнопка в панели больше не нужна.
+const seenDownloads = () => {
+  S.dlRecent = [];
+  renderDlBadge();
+};
+
+/* Кнопка загрузок в панели — только когда есть что показать: очередь, ошибка или только что
+   скачанная игра. Без загрузок её нет совсем. */
 function renderDlBadge() {
+  const tab = $("#dl-tab");
   const n = S.downloads.length;
-  const cnt = $("#dl-count");
-  cnt.hidden = !n;
-  cnt.textContent = n;
   const active = S.downloads.find((d) => d.state === "active");
+  const failed = S.downloads.some((d) => d.state === "failed");
+  const done = !n && S.dlRecent.length > 0;
+  const show = n > 0 || done || S.view === "downloads";
+  if (tab.hidden === show) tab.hidden = !show;
+  const ico = failed ? "alert" : done ? "check" : "download";
+  const icoEl = $("#dl-ico");
+  if (icoEl.dataset.ico !== ico) {
+    icoEl.dataset.ico = ico;
+    icoEl.innerHTML = I[ico];
+    icoEl.className = `dl-ico ${failed ? "warn" : done ? "ok" : ""}`;
+  }
   const meter = $("#dl-meter");
   meter.hidden = !active;
-  if (active) meter.firstElementChild.style.transform = `scaleX(${pctOf(active) / 100})`;
-  $('[data-view="downloads"]').setAttribute(
-    "aria-label",
-    n ? `Загрузки: ${n}${active ? `, ${Math.floor(pctOf(active))}%` : ""}` : "Загрузки",
-  );
+  if (active) {
+    const t = `scaleX(${pctOf(active) / 100})`;
+    if (meter.firstElementChild.style.transform !== t) meter.firstElementChild.style.transform = t;
+  }
+  const cnt = $("#dl-count");
+  const text = active ? `${Math.floor(pctOf(active))}%` : n ? String(n) : "";
+  cnt.hidden = !text;
+  if (cnt.textContent !== text) cnt.textContent = text;
+  const label = n
+    ? `Загрузки: ${n}${active ? `, ${Math.floor(pctOf(active))}%` : ""}${failed ? ", есть ошибка" : ""}`
+    : done
+      ? "Загрузки: готово"
+      : "Загрузки";
+  if (tab.getAttribute("aria-label") !== label) tab.setAttribute("aria-label", label);
 }
 
 const queued = (appid) => S.downloads.find((d) => d.appid === appid);
@@ -306,18 +343,25 @@ function renderLibs() {
 /* ---------- загрузки ---------- */
 
 async function dlAction(appid, action) {
+  if (action === "cancel") S.dlCancelled.add(appid);
   try {
     await invoke("download_action", { appid, action });
   } catch (e) {
+    S.dlCancelled.delete(appid);
     toast(e);
   }
   pollDownloads();
 }
 
+/* Список обновляется раз в секунду. Пересобирать его целиком нельзя: картинки создаются
+   заново и моргают, у пустого состояния каждый раз заново проигрывается появление. Поэтому
+   строка пересобирается, только когда меняется её устройство (состояние, место в очереди),
+   а проценты, байты и скорость меняются на месте. */
 function renderDownloads() {
   if (S.view !== "downloads") return;
   if (!$("#dl-list")) {
-    main.innerHTML = `<div class="view dl"><h1 class="page-title display">Загрузки</h1><div id="dl-list" class="dl-list"></div></div>`;
+    main.innerHTML = `<div class="view dl"><h1 class="page-title display">Загрузки</h1>
+      <div id="dl-list" class="dl-list"></div><div id="dl-done" class="dl-list"></div></div>`;
     $("#dl-list").addEventListener("click", (e) => {
       const b = e.target.closest("[data-dl]");
       if (b) dlAction(Number(b.closest("[data-appid]").dataset.appid), b.dataset.dl);
@@ -326,17 +370,47 @@ function renderDownloads() {
   }
   const list = S.downloads;
   const el = $("#dl-list");
-  if (!list.length) {
-    el.innerHTML = `<div class="empty rise">${I.download}<h3>Очередь пуста</h3><button class="btn btn-sm" data-go-lib>В библиотеку</button></div>`;
-    return;
+  const empty = !list.length && !S.dlRecent.length;
+  if (empty) {
+    if (!el.querySelector(".empty"))
+      el.innerHTML = `<div class="empty rise">${I.download}<h3>Очередь пуста</h3><button class="btn btn-sm" data-go-lib>В библиотеку</button></div>`;
+  } else {
+    el.querySelector(".empty")?.remove();
+    syncRows(el, list, dlRow, dlUpdate, (d) => d.appid);
   }
-  // Пересобираем строки, но фокус на кнопке остаётся на месте.
-  const focus = document.activeElement?.closest?.("[data-appid]") && [document.activeElement.closest("[data-appid]").dataset.appid, document.activeElement.dataset.dl];
-  el.innerHTML = list.map(dlRow).join("");
-  if (focus) el.querySelector(`[data-appid="${focus[0]}"] [data-dl="${focus[1]}"]`)?.focus();
+  const done = $("#dl-done");
+  syncRows(done, S.dlRecent, doneRow, () => {}, (r) => r.appid);
 }
 
-function dlRow(d, i, list) {
+// Строки по ключу: лишние убрать, новые и изменившиеся по устройству — пересобрать, остальные
+// обновить на месте. Обложка переезжает в новую строку тем же узлом.
+function syncRows(el, items, html, update, key) {
+  const want = new Set(items.map((x) => String(key(x))));
+  el.querySelectorAll(":scope > [data-appid]").forEach((r) => !want.has(r.dataset.appid) && r.remove());
+  items.forEach((x, i) => {
+    const id = String(key(x));
+    const sig = html(x, i, items, true);
+    let row = el.querySelector(`:scope > [data-appid="${id}"]`);
+    if (!row || row.dataset.sig !== sig) {
+      const tpl = document.createElement("template");
+      tpl.innerHTML = html(x, i, items).trim();
+      const fresh = tpl.content.firstElementChild;
+      fresh.dataset.sig = sig;
+      const img = row?.querySelector(".dl-cover img");
+      if (img) fresh.querySelector(".dl-cover").replaceChildren(...row.querySelector(".dl-cover").childNodes);
+      const focus = row?.contains(document.activeElement) && document.activeElement.dataset.dl;
+      if (row) row.replaceWith(fresh);
+      else el.append(fresh);
+      row = fresh;
+      if (focus) row.querySelector(`[data-dl="${focus}"]`)?.focus();
+    }
+    if (el.children[i] !== row) el.insertBefore(row, el.children[i] || null);
+    update(row, x);
+  });
+}
+
+// Меняющиеся каждую секунду части строки.
+function dlNums(d) {
   const pct = pctOf(d);
   const active = d.state === "active";
   const stage = active || d.state === "paused" ? DL_STAGE[d.stage] || "Подготовка" : null;
@@ -351,27 +425,69 @@ function dlRow(d, i, list) {
   const bytes = d.totalBytes && d.state !== "queued" ? `${gb(d.doneBytes)} из ${gb(d.totalBytes)}` : d.totalBytes ? gb(d.totalBytes) : "";
   const speed = active && d.speed ? `${size(d.speed)}/с` : "";
   const left = active ? eta(d.etaSecs) : null;
+  return {
+    pct,
+    status,
+    extra: [bytes, speed, left].filter(Boolean),
+    scale: d.state === "queued" ? 0 : pct / 100,
+  };
+}
+
+function dlUpdate(row, d) {
+  const n = dlNums(d);
+  const bar = row.querySelector(".bar");
+  const v = String(Math.floor(n.pct));
+  if (bar.getAttribute("aria-valuenow") !== v) bar.setAttribute("aria-valuenow", v);
+  const t = `scaleX(${n.scale})`;
+  if (bar.firstElementChild.style.transform !== t) bar.firstElementChild.style.transform = t;
+  const st = row.querySelector(".state");
+  if (st.textContent !== n.status) st.textContent = n.status;
+  const nums = row.querySelector(".dl-nums");
+  const html = n.extra.map((x) => `<span>${esc(x)}</span>`).join("");
+  if (nums.dataset.html !== html) {
+    nums.dataset.html = html;
+    nums.innerHTML = html;
+  }
+}
+
+// `sig` — только устройство строки, без цифр: по нему решаем, пересобирать ли её.
+function dlRow(d, i, list, sig) {
   const kind = DL_KIND[d.kind];
+  const paused = d.state === "paused" || d.state === "failed";
+  if (sig) return [d.state, d.kind, d.name, d.library, i === 0, i === list.length - 1].join("|");
   const g = { name: d.name, cover: d.cover };
+  const n = dlNums(d);
   return `<div class="dl-row ${d.state}" data-appid="${d.appid}">
     <span class="dl-cover">${cover(g, d.cover.header)}</span>
     <div class="dl-body">
       <div class="dl-title"><b>${esc(d.name)}</b>${kind ? `<span class="tag plain">${kind}</span>` : ""}
         <span class="caption">${esc(libName(d.library))}</span></div>
-      <div class="bar" role="progressbar" aria-label="${esc(d.name)}" aria-valuenow="${Math.floor(pct)}" aria-valuemin="0" aria-valuemax="100"><i style="transform:scaleX(${d.state === "queued" ? 0 : pct / 100})"></i></div>
-      <div class="dl-meta"><span class="state">${esc(status)}</span><span class="grow"></span>
-        ${[bytes, speed, left].filter(Boolean).map((x) => `<span>${esc(x)}</span>`).join("")}</div>
+      <div class="bar" role="progressbar" aria-label="${esc(d.name)}" aria-valuenow="${Math.floor(n.pct)}" aria-valuemin="0" aria-valuemax="100"><i style="transform:scaleX(${n.scale})"></i></div>
+      <div class="dl-meta"><span class="state">${esc(n.status)}</span><span class="grow"></span><span class="dl-nums"></span></div>
     </div>
     <div class="dl-actions">
       <button class="icon-btn" data-dl="up" aria-label="Выше в очереди" ${i === 0 ? "disabled" : ""}>${I.up}</button>
       <button class="icon-btn" data-dl="down" aria-label="Ниже в очереди" ${i === list.length - 1 ? "disabled" : ""}>${I.down}</button>
       ${
-        d.state === "paused" || d.state === "failed"
+        paused
           ? `<button class="icon-btn" data-dl="resume" aria-label="${d.state === "failed" ? "Повторить" : "Продолжить"}">${d.state === "failed" ? I.refresh : I.resume}</button>`
           : `<button class="icon-btn" data-dl="pause" aria-label="Пауза">${I.pause}</button>`
       }
       <button class="icon-btn" data-dl="cancel" aria-label="Убрать из очереди">${I.x}</button>
     </div>
+  </div>`;
+}
+
+// Докачалась, пока окно было открыто.
+function doneRow(r, i, list, sig) {
+  if (sig) return r.name;
+  return `<div class="dl-row done rise" data-appid="${r.appid}">
+    <span class="dl-cover">${cover({ name: r.name, cover: r.cover }, r.cover.header)}</span>
+    <div class="dl-body">
+      <div class="dl-title"><b>${esc(r.name)}</b></div>
+      <div class="dl-meta"><span class="status">${dot("ok")}<span>УСТАНОВЛЕНА</span></span></div>
+    </div>
+    <div class="dl-actions"><button class="btn btn-sm" data-open="${r.appid}">${I.play}Открыть</button></div>
   </div>`;
 }
 

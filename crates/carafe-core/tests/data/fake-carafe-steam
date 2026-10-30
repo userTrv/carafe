@@ -42,6 +42,10 @@ while IFS= read -r line; do
       event '"progress","downloaded":0,"total":300'
       event '"progress","downloaded":300,"total":300'
       ok '{"appid":3405340,"dir":"/tmp/carafe-test","downloaded":300,"files":3,"unchanged":0,"depots":[{"depotid":3405341,"manifest":"77"}]}' ;;
+    *'"cmd":"playtime"'*)
+      ok '{"games":[{"appid":3405340,"minutes":754,"minutes_2weeks":95,"last_played":1761800000}]}' ;;
+    *'"cmd":"achievements"'*)
+      ok '{"appid":3405340,"total":2,"unlocked":1,"achievements":[{"id":"ACH_FIRST","name":"Первая кровь","description":"Победить первого врага","icon":"https://cdn.cloudflare.steamstatic.com/steamcommunity/public/images/apps/3405340/a.jpg","icon_gray":null,"hidden":false,"unlocked":true,"unlocked_at":1761700000,"global_percent":81.5},{"id":"ACH_SECRET","name":"Тайна","description":null,"icon":null,"icon_gray":null,"hidden":true,"unlocked":false,"unlocked_at":null,"global_percent":3.2}]}' ;;
     *'"cmd":"logout"'*) ok '{"revoked":true}' ;;
     *'"cmd":"crash"'*) exit 3 ;;
     *) cmd=$(printf '%s\n' "$line" | sed -n 's/.*"cmd":"\([a-z_]*\)".*/\1/p'); fail bad_request "$cmd" ;;

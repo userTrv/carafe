@@ -13,7 +13,8 @@ use crate::error::{Error, Result};
 use crate::fsutil;
 use crate::process::Log;
 use crate::steamclient::{
-    self, Account, AppDepots, Credentials, DepotEvent, LoginEvent, OwnedApp, RefreshToken, SteamHelper,
+    self, Account, Achievements, AppDepots, Credentials, DepotEvent, LoginEvent, OwnedApp, Playtime, RefreshToken,
+    SteamHelper,
 };
 
 /// Сервис записи в Связке ключей.
@@ -112,6 +113,13 @@ pub struct OwnedGame {
     pub installed: bool,
 }
 
+/// Что Steam знает об игре на этом аккаунте: время и достижения.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GameStats {
+    pub playtime: Option<Playtime>,
+    pub achievements: Option<Achievements>,
+}
+
 impl Carafe {
     /// Путь к `carafe-steam`.
     pub fn steam_helper(&self) -> Result<PathBuf> {
@@ -181,6 +189,29 @@ impl Carafe {
             .collect();
         games.sort_by_cached_key(|g| (g.app.name.to_lowercase(), g.app.appid));
         Ok(games)
+    }
+
+    /// Время в игре и достижения одной игры за одну сессию хелпера. Чего Steam не дал
+    /// (нет достижений, игра не запускалась), то `None`; ошибка достижений время не роняет.
+    pub fn steam_game_stats(&self, appid: u32, language: &str) -> Result<GameStats> {
+        let (mut h, _) = self.steam_connect()?;
+        // Хелпер старше этих команд отвечает bad_request — тогда просто нечего показать.
+        let old = |e: &Error| matches!(e, Error::Steam { code, .. } if code == "bad_request");
+        let playtime = match h.playtime() {
+            Ok(list) => list.into_iter().find(|p| p.appid == appid),
+            Err(e) if old(&e) => return Ok(GameStats { playtime: None, achievements: None }),
+            Err(e) => return Err(e),
+        };
+        let achievements = match h.achievements(appid, language) {
+            Ok(a) if a.total > 0 => Some(a),
+            Ok(_) => None,
+            Err(e @ (Error::Interrupted | Error::SteamProtocol(_))) => return Err(e),
+            Err(e) => {
+                self.log(Log::Output(format!("carafe: достижения {appid}: {e}")));
+                None
+            }
+        };
+        Ok(GameStats { playtime, achievements })
     }
 
     /// Депо и ветки игры. Без входа хелпер спрашивает Steam анонимно.
@@ -305,6 +336,7 @@ mod tests {
         let c = carafe(home.path(), store.clone());
         assert_eq!(c.steam_account().unwrap(), None);
         assert!(matches!(c.owned_games(), Err(Error::NotLoggedIn)));
+        assert!(matches!(c.steam_game_stats(3405340, "russian"), Err(Error::NotLoggedIn)));
 
         let mut urls = vec![];
         let acc = c
@@ -327,6 +359,12 @@ mod tests {
             games.iter().map(|g| (g.app.appid, g.installed)).collect::<Vec<_>>(),
             [(3405340, true), (1245620, false)]
         );
+
+        let st = c.steam_game_stats(3405340, "russian").unwrap();
+        assert_eq!(st.playtime.map(|p| p.minutes), Some(754));
+        assert_eq!(st.achievements.map(|a| (a.unlocked, a.total)), Some((1, 2)));
+        let none = c.steam_game_stats(1245620, "russian").unwrap();
+        assert_eq!(none.playtime, None, "не запускалась — времени нет");
 
         let req = DownloadRequest {
             appid: 3405340,

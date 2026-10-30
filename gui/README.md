@@ -18,8 +18,9 @@ cargo clippy --all-targets -- -D warnings && cargo fmt --check && cargo test
 | `CARAFE_GUI_BACKEND` | `mock` — демо-данные; иначе `CliBackend`, если известен checkout |
 | `CARAFE_CHECKOUT` | checkout carafe с `bin/carafe` (то же — поле «Checkout carafe» в настройках); без него carafe.app берёт свой `bin/carafe` |
 | `CARAFE_MOCK=fresh` | демо первого запуска: нет движка, бутылки и Steam |
-| `CARAFE_MOCK_STEAM=in` | демо: уже вошёл в Steam, в библиотеке — все купленные игры |
-| `CARAFE_GUI_ROUTE` | открыть экран сразу: `game/<appid>` (`game/<appid>/<px>` — с прокруткой), `play/<appid>`, `setup`, `settings`, `downloads`; `install/<appid>` и `move/<appid>` — с открытым меню библиотек, `move/<appid>/go` — сразу перенос; `login` — окно входа в Steam |
+| `CARAFE_MOCK_STEAM=in` | демо: уже вошёл в Steam, в библиотеке — все купленные игры, у установленных — время в игре и достижения |
+| `CARAFE_MOCK_QUEUE` | `empty` — очередь загрузок пуста (кнопки загрузок в панели нет); `finishing` — Elden Ring докачивается за секунды |
+| `CARAFE_GUI_ROUTE` | открыть экран сразу: `game/<appid>` (`game/<appid>/<px>` — с прокруткой), `details/<appid>` — с открытыми подробностями, `play/<appid>`, `setup`, `settings`, `downloads`; `install/<appid>` и `move/<appid>` — с открытым меню библиотек, `move/<appid>/go` — сразу перенос; `login` — окно входа в Steam |
 | `CARAFE_SOJU` | checkout soju для моста (то же — поле «Checkout soju»); по умолчанию рядом с checkout carafe |
 | `CARAFE_HOME` | как у `bin/carafe` |
 

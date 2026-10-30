@@ -21,17 +21,17 @@
           <span class="brand-name">carafe</span>
         </span>
         <button class="tab" data-view="library">Библиотека</button>
-        <button class="tab" data-view="downloads">
-          Загрузки
-          <span class="meter" id="dl-meter" hidden><i></i></span>
-          <span class="tab-count" id="dl-count" hidden></span>
-        </button>
         <button class="tab" data-view="setup">
           Окружение
           <span class="tab-count" id="env-count" hidden></span>
         </button>
         <button class="tab" data-view="settings">Настройки</button>
         <span class="nav-sep" aria-hidden="true"></span>
+        <button class="tab dl-pill" data-view="downloads" id="dl-tab" aria-label="Загрузки" hidden>
+          <span class="dl-ico" id="dl-ico"></span>
+          <span class="meter" id="dl-meter" hidden><i></i></span>
+          <span class="tab-count" id="dl-count" hidden></span>
+        </button>
         <input class="nav-search" id="q" type="search" placeholder="Поиск" aria-label="Поиск по библиотеке" spellcheck="false" autocomplete="off" hidden />
         <button class="tab" id="search-btn" aria-label="Поиск"></button>
         <span id="account"></span>

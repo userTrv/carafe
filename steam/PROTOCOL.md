@@ -157,6 +157,39 @@
 - общих редистрибутивов (`depotfromapp`, например DirectX/VC++ 228980) и веток с паролем;
 - проверки свободного места до начала.
 
+### `playtime`
+
+Нужен вход. Сколько аккаунт играл — через `Player.GetOwnedGames` сессии (ключ Web API не нужен). Только сыгранные игры (есть минуты или последний запуск):
+
+```json
+{"games":[{"appid":3405340,"minutes":1289,"minutes_2weeks":355,"last_played":1761800000}]}
+```
+
+`minutes` — всего, `minutes_2weeks` — за две недели, `last_played` — Unix-время последнего запуска (`null`, если Steam его не знает).
+
+### `achievements`
+
+```json
+{"id":8,"cmd":"achievements","appid":3405340,"language":"russian"}
+```
+
+Нужен вход. Схема достижений (`Player.GetGameAchievements`, на языке `language`, по умолчанию `english`) и отметки аккаунта (`Player.GetUserAchievements`), склеенные по ключу. Архивные достижения не входят. Ответ:
+
+```json
+{
+  "appid": 3405340, "total": 139, "unlocked": 70,
+  "achievements": [
+    {"id":"ACH_ANVIL","name":"Anvil","description":"Complete 3 Challenges",
+     "icon":"https://cdn.cloudflare.steamstatic.com/steamcommunity/public/images/apps/3405340/….jpg",
+     "icon_gray":"https://…","hidden":false,"unlocked":true,"unlocked_at":1761700000,"global_percent":41.2}
+  ]
+}
+```
+
+`icon` — иконка открытого, `icon_gray` — закрытого (полные URL на CDN Steam, `null`, если иконки нет). `unlocked_at` — Unix-время открытия, `global_percent` — доля игроков, открывших достижение. У скрытого закрытого достижения `description` может быть `null`. Нет достижений — `total: 0`.
+
+Обе команды добавлены без смены `protocol`: ядро, получив `bad_request` от старого хелпера, просто не показывает время и достижения.
+
 ### `logout`
 
 ```json

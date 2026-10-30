@@ -128,6 +128,46 @@ pub struct Branch {
     pub description: Option<String>,
 }
 
+/// Сколько аккаунт играл в игру (Steam считает сам, carafe только читает).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Playtime {
+    pub appid: u32,
+    /// Минут всего.
+    pub minutes: u64,
+    /// Минут за последние две недели.
+    #[serde(default)]
+    pub minutes_2weeks: u64,
+    /// Unix-время последнего запуска.
+    pub last_played: Option<i64>,
+}
+
+/// Достижения игры для своего аккаунта.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Achievements {
+    pub appid: u32,
+    pub total: u32,
+    pub unlocked: u32,
+    pub achievements: Vec<Achievement>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Achievement {
+    /// API-имя (`ACH_WIN_ONE_GAME`).
+    pub id: String,
+    /// Название на запрошенном языке.
+    pub name: String,
+    pub description: Option<String>,
+    /// URL иконки открытого достижения и серой — закрытого.
+    pub icon: Option<String>,
+    pub icon_gray: Option<String>,
+    pub hidden: bool,
+    pub unlocked: bool,
+    /// Unix-время, когда открыто.
+    pub unlocked_at: Option<i64>,
+    /// Доля игроков, открывших достижение, в процентах.
+    pub global_percent: Option<f64>,
+}
+
 /// События загрузки от хелпера (в очередь их переводит [`crate::SteamKitDownloader`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DepotEvent {
@@ -351,6 +391,20 @@ impl SteamHelper {
         self.simple::<R>("owned_apps", json!({})).map(|r| r.apps)
     }
 
+    /// Время в играх: только сыгранные (минуты или последний запуск есть).
+    pub fn playtime(&mut self) -> Result<Vec<Playtime>> {
+        #[derive(Deserialize)]
+        struct R {
+            games: Vec<Playtime>,
+        }
+        self.simple::<R>("playtime", json!({})).map(|r| r.games)
+    }
+
+    /// Достижения игры; названия — на `language` из Steam (`russian`, `english`…).
+    pub fn achievements(&mut self, appid: u32, language: &str) -> Result<Achievements> {
+        self.simple("achievements", json!({ "appid": appid, "language": language }))
+    }
+
     pub fn app_info(&mut self, appid: u32) -> Result<AppDepots> {
         self.simple("app_info", json!({ "appid": appid }))
     }
@@ -501,6 +555,18 @@ pub(crate) mod tests {
         assert_eq!(apps[0].name, "Megabonk");
         assert_eq!((apps[0].windows, apps[0].size_bytes), (true, Some(1_100_000_000)));
         assert_eq!((apps[1].windows, apps[1].size_bytes), (false, None));
+
+        let played = h.playtime().unwrap();
+        assert_eq!(
+            played,
+            [Playtime { appid: 3405340, minutes: 754, minutes_2weeks: 95, last_played: Some(1761800000) }]
+        );
+        let ach = h.achievements(3405340, "russian").unwrap();
+        assert_eq!((ach.total, ach.unlocked, ach.achievements.len()), (2, 1, 2));
+        assert_eq!(ach.achievements[0].name, "Первая кровь");
+        assert_eq!(ach.achievements[0].unlocked_at, Some(1761700000));
+        assert_eq!(ach.achievements[1].global_percent, Some(3.2));
+        assert!(!ach.achievements[1].unlocked && ach.achievements[1].hidden);
 
         let info = h.app_info(3405340).unwrap();
         assert_eq!(info.depots.iter().filter(|d| d.install).map(|d| d.depotid).collect::<Vec<_>>(), [3405341]);
