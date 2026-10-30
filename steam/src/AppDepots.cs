@@ -3,14 +3,36 @@ using SteamKit2;
 
 namespace Carafe.Steam;
 
-/// Депо приложения из appinfo и выбор того, что ставить под Windows (как в DepotDownloader:
-/// oslist с windows или пустой, 64 бита, если есть, английский или без языка, без чужих DLC).
+/// Платформа сборки: `windows` (через Wine) или `macos` (нативно).
+static class Os
+{
+    public const string Windows = "windows";
+    public const string MacOS = "macos";
+
+    /// Поле `platform` запроса; нет — Windows, как до появления нативных игр.
+    public static string From(Request req) => req.Body["platform"]?.GetValue<string>() switch
+    {
+        null or "" or Windows => Windows,
+        MacOS => MacOS,
+        var p => throw new HelperException("bad_request", $"неизвестная платформа {p}"),
+    };
+
+    public static string Label(string platform) => platform == MacOS ? "macOS" : "Windows";
+
+    public static bool In(string oslist, string platform) => oslist.Split(',').Contains(platform);
+}
+
+/// Депо приложения из appinfo и выбор того, что ставить под платформу (как в DepotDownloader:
+/// oslist с платформой или пустой, 64 бита, если есть, английский или без языка, без чужих DLC).
 sealed class AppDepots
 {
     public required uint AppId { get; init; }
     public required string Name { get; init; }
+    /// Для какой платформы выбраны депо (`Install`).
+    public required string Platform { get; init; }
     public required List<Depot> Depots { get; init; }
     public required List<Branch> Branches { get; init; }
+    public required List<Launch> LaunchEntries { get; init; }
 
     public List<Depot> Install => Depots.Where(d => d.Skip == null).ToList();
 
@@ -27,7 +49,34 @@ sealed class AppDepots
 
     public sealed record Branch(string Name, uint BuildId, long TimeUpdated, bool PasswordRequired, string? Description);
 
-    public static AppDepots From(uint appid, KeyValue kv, IReadOnlySet<uint> owned, string branch = "public")
+    /// Вариант запуска из `config/launch`: что запускать, с какими аргументами, на какой ОС.
+    public sealed record Launch(
+        string Executable,
+        string? Arguments,
+        string? WorkingDir,
+        string? Type,
+        string? Description,
+        string OsList,
+        string? OsArch,
+        string? BetaKey);
+
+    /// Есть ли нативная сборка для macOS: `common/oslist` с macos и депо именно под macOS, которое
+    /// ставится (есть манифест ветки, своё или купленное DLC). `ownedDepots` — депо из лицензий
+    /// аккаунта: пустой набор не проверяется (анонимно или пакеты без списка депо).
+    public static bool HasMac(KeyValue kv, AppDepots mac, IReadOnlySet<uint> ownedDepots) =>
+        Os.In(kv["common"]["oslist"].AsString() ?? "", Os.MacOS)
+        && mac.Install.Any(d => Os.In(d.OsList, Os.MacOS)
+                                && (ownedDepots.Count == 0 || ownedDepots.Contains(d.Id)));
+
+    /// Варианты запуска под платформу и ветку: oslist пустой или с платформой, без чужих бет.
+    public List<Launch> LaunchFor(string branch) => LaunchEntries
+        .Where(l => l.OsList.Length == 0 || Os.In(l.OsList, Platform))
+        .Where(l => string.IsNullOrEmpty(l.BetaKey) || l.BetaKey == branch)
+        .Where(l => l.Type is null or "" or "default" or "none" or "option1")
+        .ToList();
+
+    public static AppDepots From(uint appid, KeyValue kv, IReadOnlySet<uint> owned, string branch = "public",
+        string platform = Os.Windows)
     {
         var depots = new List<Depot>();
         var branches = new List<Branch>();
@@ -62,8 +111,8 @@ sealed class AppDepots
             string? skip = null;
             if (d["depotfromapp"].Value != null || d["sharedinstall"].AsBoolean())
                 skip = "общий редистрибутив";
-            else if (os.Length > 0 && !os.Split(',').Contains("windows"))
-                skip = "не Windows";
+            else if (os.Length > 0 && !Os.In(os, platform))
+                skip = $"не {Os.Label(platform)}";
             else if (dlc != 0 && !owned.Contains(dlc))
                 skip = "DLC не куплено";
             else if (!string.IsNullOrEmpty(lang) && lang != "english")
@@ -81,12 +130,25 @@ sealed class AppDepots
                 if (depots[i].Skip == null && depots[i].Arch == "32")
                     depots[i] = depots[i] with { Skip = "32 бита" };
 
+        var launch = new List<Launch>();
+        foreach (var l in kv["config"]["launch"].Children)
+        {
+            var exe = l["executable"].AsString();
+            if (string.IsNullOrEmpty(exe)) continue;
+            var c = l["config"];
+            launch.Add(new Launch(exe, l["arguments"].AsString(), l["workingdir"].AsString(), l["type"].AsString(),
+                l["description"].AsString(), c["oslist"].AsString() ?? "", c["osarch"].AsString(),
+                c["betakey"].AsString()));
+        }
+
         return new AppDepots
         {
             AppId = appid,
             Name = kv["common"]["name"].AsString() ?? $"App {appid}",
+            Platform = platform,
             Depots = depots,
             Branches = branches,
+            LaunchEntries = launch,
         };
     }
 
@@ -94,6 +156,7 @@ sealed class AppDepots
     {
         ["appid"] = AppId,
         ["name"] = Name,
+        ["platform"] = Platform,
         ["size_bytes"] = Install.Sum(d => (long)d.Size),
         ["depots"] = new JsonArray(Depots.Select(d => (JsonNode)new JsonObject
         {
@@ -117,5 +180,18 @@ sealed class AppDepots
             ["password_required"] = b.PasswordRequired,
             ["description"] = b.Description,
         }).ToArray()),
+        ["launch"] = LaunchJson(LaunchEntries),
     };
+
+    public static JsonArray LaunchJson(IEnumerable<Launch> list) => new(list.Select(l => (JsonNode)new JsonObject
+    {
+        ["executable"] = l.Executable,
+        ["arguments"] = l.Arguments,
+        ["workingdir"] = l.WorkingDir,
+        ["type"] = l.Type,
+        ["description"] = l.Description,
+        ["oslist"] = l.OsList,
+        ["osarch"] = l.OsArch,
+        ["betakey"] = l.BetaKey,
+    }).ToArray());
 }

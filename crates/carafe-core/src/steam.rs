@@ -8,6 +8,7 @@ use crate::Carafe;
 use crate::appinfo::{self, AppInfo, CloudRule};
 use crate::error::{Error, IoContext, Result};
 use crate::fsutil;
+use crate::native::Platform;
 use crate::process::{self, Log};
 use crate::queue::{Job, JobKind};
 
@@ -48,15 +49,36 @@ impl Carafe {
     /// Поставить игру в очередь загрузок: установку в `to` (или в библиотеку по умолчанию), а если
     /// игра уже стоит — обновление на месте. Качает обработчик очереди ([`crate::Queue`]).
     pub fn enqueue_game(&self, appid: u32, to: Option<&Path>, verify: bool) -> Result<Job> {
+        self.enqueue_game_as(appid, to, verify, None)
+    }
+
+    /// Как [`Carafe::enqueue_game`], но с выбором сборки: `Some(Macos)` — нативная. Уже
+    /// установленная игра обновляется той сборкой, что стоит; другую — [`Error::PlatformMismatch`].
+    /// `None` — какая стоит, а для новой — Windows.
+    pub fn enqueue_game_as(
+        &self,
+        appid: u32,
+        to: Option<&Path>,
+        verify: bool,
+        platform: Option<Platform>,
+    ) -> Result<Job> {
         let installed = self.locate(appid)?.is_some();
         let dir = self.install_dir(appid, to)?;
+        let have = installed.then(|| crate::native::platform_of(&dir));
+        let platform = match (have, platform) {
+            (Some(h), Some(p)) if h != p => return Err(Error::PlatformMismatch { appid, installed: h }),
+            (Some(h), _) => h,
+            (None, p) => p.unwrap_or_default(),
+        };
         let kind = match (installed, verify) {
             (false, _) => JobKind::Install,
             (true, true) => JobKind::Verify,
             (true, false) => JobKind::Update,
         };
         let mut job = Job::new(appid, dir, kind);
-        job.name = self.cached_app_info(appid).and_then(|i| i.name);
+        job.platform = platform;
+        job.name =
+            self.cached_app_info(appid).and_then(|i| i.name).or_else(|| self.cached_owned_app(appid).map(|a| a.name));
         self.queue().add(job.clone())?;
         Ok(job)
     }

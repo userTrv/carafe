@@ -97,6 +97,9 @@ pub fn owned(c: &Carafe, json: bool) -> Result<(), Error> {
                     "installed": g.installed,
                     "windows": g.app.windows,
                     "size_bytes": g.app.size_bytes,
+                    "macos": g.app.macos,
+                    "macos_size_bytes": g.app.macos_size_bytes,
+                    "macos_arch": g.app.macos_arch,
                 })
             })
             .collect();
@@ -106,8 +109,9 @@ pub fn owned(c: &Carafe, json: bool) -> Result<(), Error> {
     for g in &games {
         let mark = if g.installed { "установлена" } else { "—" };
         let win = if g.app.windows { "" } else { "\tбез Windows-сборки" };
-        let size = g.app.size_bytes.map(human_bytes).unwrap_or_default();
-        println!("{}\t{}\t{mark}\t{size}{win}", g.app.appid, g.app.name);
+        let mac = if g.app.macos { "\tmacOS" } else { "" };
+        let size = g.app.size_bytes.or(g.app.macos_size_bytes).map(human_bytes).unwrap_or_default();
+        println!("{}\t{}\t{mark}\t{size}{win}{mac}", g.app.appid, g.app.name);
     }
     Ok(())
 }

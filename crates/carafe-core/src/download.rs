@@ -33,6 +33,8 @@ pub struct DownloadRequest {
     pub depots: Vec<u32>,
     /// Проверить уже скачанные файлы (steamcmd `validate`).
     pub verify: bool,
+    /// Какую сборку качать: Windows (по умолчанию) или нативную macOS.
+    pub platform: crate::native::Platform,
 }
 
 /// Этап загрузки.
@@ -144,6 +146,11 @@ impl Downloader for SteamCmdDownloader {
     }
 
     fn download(&self, req: &DownloadRequest, stop: &StopFlag, on_event: &mut dyn FnMut(DownloadEvent)) -> Result<()> {
+        // steamcmd с `ForcePlatformType macos` смог бы, но carafe ставит нативные игры только
+        // через свой вход: steamcmd пишет в общие логи Steam и держит свой отдельный вход.
+        if req.platform != crate::native::Platform::Windows {
+            return Err(Error::NativeNeedsLogin);
+        }
         on_event(DownloadEvent::Stage(DownloadStage::Preparing));
         let user = match &self.user {
             Some(u) => u.clone(),
@@ -382,6 +389,13 @@ impl Downloader for MockDownloader {
         on_event(DownloadEvent::Stage(DownloadStage::Committing));
         let exe = req.dir.join(MOCK_EXE);
         fs::write(&exe, b"MZ").at(&exe)?;
+        if req.platform == crate::native::Platform::Macos {
+            let bin = req.dir.join("Mock.app/Contents/MacOS/Mock");
+            fsutil::create_dir_all(bin.parent().unwrap_or(&req.dir))?;
+            fs::write(&bin, b"#!/bin/sh\nexit 0\n").at(&bin)?;
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).at(&bin)?;
+        }
         fsutil::remove_all(&state)?;
         on_event(DownloadEvent::Log(format!("Success! App '{}' fully installed.", req.appid)));
         Ok(())
@@ -461,7 +475,14 @@ mod tests {
     #[test]
     fn mock_resumes() {
         let d = TestDir::new();
-        let req = DownloadRequest { appid: 1, dir: d.path().into(), branch: None, depots: vec![], verify: false };
+        let req = DownloadRequest {
+            appid: 1,
+            dir: d.path().into(),
+            branch: None,
+            depots: vec![],
+            verify: false,
+            platform: Default::default(),
+        };
         let dl = MockDownloader { total: 10, step: 2, ..Default::default() };
         let stop = StopFlag::default();
         let mut seen = vec![];

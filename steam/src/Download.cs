@@ -7,7 +7,7 @@ using SteamKit2.CDN;
 
 namespace Carafe.Steam;
 
-/// Загрузка Windows-депо приложения в папку: манифесты, чанки с CDN Steam, прогресс.
+/// Загрузка депо приложения (Windows или macOS) в папку: манифесты, чанки с CDN Steam, прогресс.
 sealed partial class Session
 {
     const int Parallel = 8;
@@ -24,16 +24,20 @@ sealed partial class Session
         var dir = Path.GetFullPath(req.Str("dir"));
         var branch = req.Body["branch"]?.GetValue<string>() is { Length: > 0 } b ? b : "public";
         var only = req.Body["depots"]?.AsArray().Select(n => n!.GetValue<uint>()).ToHashSet();
+        var platform = Os.From(req);
 
-        var owned = await OwnedAppIds(ct);
+        var (owned, ownedDepots) = await OwnedContent(ct);
         if (account != "" && !owned.Contains(appid)) throw new HelperException("not_owned", $"{appid} нет в лицензиях аккаунта");
         var infos = await AppInfos([appid], ct);
         if (!infos.TryGetValue(appid, out var kv)) throw new HelperException("not_found", $"нет appinfo для {appid}");
-        var app = AppDepots.From(appid, kv, owned, branch);
+        var app = AppDepots.From(appid, kv, owned, branch, platform);
         if (app.Branches.FirstOrDefault(x => x.Name == branch) is { PasswordRequired: true })
             throw new HelperException("bad_request", $"ветка {branch} под паролем — не поддерживается");
+        // Без своего macOS-депо поставились бы одни общие данные — это не игра.
+        if (platform == Os.MacOS && only == null && !AppDepots.HasMac(kv, app, ownedDepots))
+            throw new HelperException("no_depots", "у игры нет macOS-сборки");
         var depots = only == null ? app.Install : app.Depots.Where(d => only.Contains(d.Id)).ToList();
-        if (depots.Count == 0) throw new HelperException("no_depots", "у игры нет Windows-депо");
+        if (depots.Count == 0) throw new HelperException("no_depots", $"у игры нет {Os.Label(platform)}-депо");
 
         Directory.CreateDirectory(dir);
         var servers = await CdnServers(appid, ct);
@@ -78,6 +82,8 @@ sealed partial class Session
         Progress(0, force: true);
 
         var skipped = 0;
+        // Симлинки — после файлов: через них ничего не пишется.
+        var links = new List<(string Path, string Target)>();
         foreach (var job in jobs)
         {
             // Каталоги и пустые файлы — сразу; чанки — параллельно.
@@ -93,7 +99,7 @@ sealed partial class Session
                 Directory.CreateDirectory(Path.GetDirectoryName(path)!);
                 if (f.LinkTarget is { Length: > 0 })
                 {
-                    Log.Write("симлинк в депо пропущен");
+                    links.Add((path, f.LinkTarget));
                     continue;
                 }
                 if (await UpToDate(path, f, ct))
@@ -117,7 +123,11 @@ sealed partial class Session
                     await RandomAccess.WriteAsync(h, buf.AsMemory(0, n), (long)item.Chunk.Offset, token);
                     Progress(n);
                 });
+            foreach (var f in job.Files)
+                if (f.Flags.HasFlag(EDepotFileFlag.Executable) && f.LinkTarget is not { Length: > 0 })
+                    MakeExecutable(SafePath(dir, f.FileName));
         }
+        foreach (var (path, target) in links) Symlink(dir, path, target);
         Progress(0, force: true);
         Log.Write($"загрузка {appid} готова, файлов без изменений: {skipped}");
         return new JsonObject
@@ -132,7 +142,40 @@ sealed partial class Session
                 ["depotid"] = j.DepotId,
                 ["manifest"] = j.Manifest.ManifestGID.ToString(),
             }).ToArray()),
+            ["platform"] = platform,
+            ["launch"] = AppDepots.LaunchJson(app.LaunchFor(branch)),
         };
+    }
+
+    /// Флаг executable из манифеста: без него не запустится ни бинарник в .app, ни скрипт.
+    static void MakeExecutable(string path)
+    {
+        if (OperatingSystem.IsWindows() || !File.Exists(path)) return;
+        var mode = File.GetUnixFileMode(path);
+        const UnixFileMode x = UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute;
+        if ((mode & x) != x) File.SetUnixFileMode(path, mode | x);
+    }
+
+    /// Симлинк из манифеста (во фреймворках .app их много): только относительный и только внутрь
+    /// `dir`. Остальные пропускаются с записью в лог.
+    static void Symlink(string dir, string path, string target)
+    {
+        var t = target.Replace('\\', '/');
+        var resolved = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(path)!, t));
+        if (Path.IsPathRooted(t) || !(resolved + "/").StartsWith(dir.TrimEnd('/') + "/", StringComparison.Ordinal))
+        {
+            Log.Write("симлинк наружу из папки игры пропущен");
+            return;
+        }
+        var info = new FileInfo(path);
+        if (info.LinkTarget == t) return;
+        if (info.LinkTarget != null || info.Exists) File.Delete(path);
+        else if (Directory.Exists(path))
+        {
+            Log.Write("на месте симлинка из манифеста — папка, оставляю как есть");
+            return;
+        }
+        File.CreateSymbolicLink(path, t);
     }
 
     /// Путь файла из манифеста внутри `dir`: без абсолютных путей и `..`.

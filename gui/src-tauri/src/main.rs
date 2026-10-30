@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 use tauri_plugin_dialog::DialogExt;
 
-use backend::{AppId, Backend, CheckId, DownloadAction, EngineKind, Profile, TaskEvent};
+use backend::{AppId, Backend, CheckId, DownloadAction, EngineKind, Platform, Profile, TaskEvent};
 
 /// Настройки GUI: профиль запуска и пути к checkout carafe и soju для `CliBackend`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -293,9 +293,22 @@ async fn library_action(app: State<'_, App>, action: String, path: String) -> Re
 }
 
 #[tauri::command]
-async fn install(app: State<'_, App>, appid: AppId, library: Option<String>) -> Result<(), String> {
+async fn install(
+    app: State<'_, App>,
+    appid: AppId,
+    library: Option<String>,
+    platform: Option<Platform>,
+) -> Result<(), String> {
     let b = app.backend();
-    blocking(move || b.install(appid, library.as_deref().map(std::path::Path::new))).await
+    let platform = platform.unwrap_or_default();
+    blocking(move || {
+        b.install(
+            appid,
+            library.as_deref().map(std::path::Path::new),
+            platform,
+        )
+    })
+    .await
 }
 
 #[tauri::command]

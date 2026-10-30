@@ -37,8 +37,9 @@ usage() {
   carafe bottle restore NAME [КОПИЯ]  вернуть бутылку из резервной копии (по умолчанию свежей)
   carafe steam login USER          войти в steamcmd (пароль и Steam Guard вводишь сам)
   carafe game install APPID USER   скачать Windows-сборку игры через steamcmd
+                                   (нативную macOS-сборку ставит Rust-версия: --native)
   carafe game import APPID [DIR]   забрать depot, скачанный консолью Steam (download_depot)
-  carafe game run APPID [ARGS...]  запустить игру (exe ищется в папке игры)
+  carafe game run APPID [ARGS...]  запустить игру (exe ищется в папке игры; нативную — её .app)
   carafe bridge build APPID|DLL    собрать мост в Steam для Mac (ачивки, лидерборды) — из soju
   carafe bridge test APPID|DLL     проверить мост на Spacewar (480) против нативного Steam
   carafe cloud status|pull|push APPID  сейвы со Steam Cloud (game run делает pull/push сам)
@@ -561,6 +562,10 @@ cmd_steam_login() {
 }
 
 cmd_game_install() {
+  local a
+  for a in "$@"; do
+    [[ "$a" != --native ]] || die "нативную macOS-сборку ставит Rust-версия carafe (crates/carafe-cli) или carafe.app: carafe game install APPID --native"
+  done
   local appid="${1:?нужен APPID}" user="${2:?нужен логин Steam}"
   ensure_steamcmd
   mkdir -p "$GAMES/$appid"
@@ -728,8 +733,37 @@ cloud_sync() {
   SteamAppId="$appid" "$steamd" "${args[@]}"
 }
 
+# Нативная macOS-игра (метка .carafe-native, ставит Rust-версия): .app из appinfo или в корне.
+native_target() {
+  local dir="$1" exe app
+  exe="$(json "$dir/.carafe-native" launch.0.executable || true)"
+  if [[ -n "$exe" && "$exe" != *..* && -e "$dir/$exe" ]]; then app="$dir/$exe"
+  else app="$(find "$dir" -maxdepth 2 -name '*.app' -type d ! -iname '*crash*' 2>/dev/null | sort | head -1)"; fi
+  [[ -n "$app" ]] || return 1
+  if [[ "$app" == *.app ]]; then
+    exe="$(plutil -extract CFBundleExecutable raw -o - "$app/Contents/Info.plist" 2>/dev/null || true)"
+    [[ -n "$exe" ]] || exe="$(ls "$app/Contents/MacOS" | head -1)"
+    app="$app/Contents/MacOS/$exe"
+  fi
+  [[ -x "$app" ]] && echo "$app"
+}
+
+cmd_game_run_native() {
+  local appid="$1" dir="$GAMES/$1" bin; shift
+  bin="$(native_target "$dir")" || die "не нашёл .app в $dir"
+  # Steamworks нативной игры говорит с Steam для Mac напрямую — без него игра не войдёт в Steam.
+  if [[ -n "$(find "$dir" -name libsteam_api.dylib -print -quit 2>/dev/null)" ]] && ! pgrep -x steam_osx >/dev/null; then
+    die "игре нужен запущенный Steam для Mac: открой Steam и запусти игру снова"
+  fi
+  echo "$appid" > "$dir/steam_appid.txt"
+  log "запускаю нативно $bin"
+  cd "$dir"
+  SteamAppId="$appid" SteamGameId="$appid" exec "$bin" "$@"
+}
+
 cmd_game_run() {
   local appid="${1:?нужен APPID}"; shift
+  [[ ! -f "$GAMES/$appid/.carafe-native" ]] || cmd_game_run_native "$appid" "$@"
   local exe; exe="$(find_game_exe "$GAMES/$appid")"
   [[ -n "$exe" ]] || die "не нашёл exe в $GAMES/$appid (задай CARAFE_EXE)"
   apply_quirks "$GAMES/$appid"
@@ -783,7 +817,7 @@ case "${1:-}" in
     cmd_steam_login "${3:-}" ;;
   game)
     case "${2:-}" in
-      install) cmd_game_install "${3:-}" "${4:-}" ;;
+      install) shift 2; cmd_game_install "$@" ;;
       import) cmd_game_import "${3:-}" "${4:-}" ;;
       run) shift 2; cmd_game_run "$@" ;;
       *) usage; exit 1 ;;

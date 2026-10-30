@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use carafe_core::download::steamcmd_accounts;
 use carafe_core::{
     ActiveSource, AutoDownloader, BridgeState, BridgeTarget, Carafe, CloudMode, Downloader, EngineKind, Error,
-    JobState, MoveKind, Queue, QueueEvent, SteamCmdDownloader, human_bytes, parse_appid,
+    JobState, MoveKind, Platform, Queue, QueueEvent, SteamCmdDownloader, human_bytes, parse_appid,
 };
 
 const USAGE: &str = "\
@@ -29,13 +29,14 @@ const USAGE: &str = "\
   carafe logout                    выйти: отозвать вход и стереть его из Связки ключей
   carafe account [--json]          под каким аккаунтом вошёл (без сети)
   carafe steam login USER          войти в steamcmd (пароль и Steam Guard вводишь сам)
-  carafe game install APPID [USER] [--to DIR]
+  carafe game install APPID [USER] [--to DIR] [--native]
                                    скачать Windows-сборку (через очередь): без USER —
-                                   с аккаунта из carafe login (SteamKit2), иначе steamcmd
+                                   с аккаунта из carafe login (SteamKit2), иначе steamcmd;
+                                   --native — нативную macOS-сборку, без Wine (только carafe login)
   carafe game verify APPID         проверить файлы игры
   carafe game move APPID DIR       перенести игру в другую библиотеку
   carafe game import APPID [DIR]   забрать depot, скачанный консолью Steam (download_depot)
-  carafe game run APPID [ARGS...]  запустить игру (exe ищется в папке игры)
+  carafe game run APPID [ARGS...]  запустить игру (exe ищется в папке игры; нативную — её .app)
   carafe game list                 установленные игры: мост, правила облака
   carafe game owned [--json]       все купленные игры аккаунта (после carafe login)
   carafe game stats APPID [--json] время в игре и достижения (после carafe login)
@@ -88,14 +89,17 @@ fn main() -> ExitCode {
     }
 }
 
-/// Позиционные аргументы и `--to DIR`.
-fn split_to(args: &[OsString]) -> Result<(Vec<String>, Option<PathBuf>), Fail> {
+/// Аргументы `game install`: позиционные, `--to DIR` и `--native`.
+fn split_install(args: &[OsString]) -> Result<(Vec<String>, Option<PathBuf>, bool), Fail> {
     let mut pos = vec![];
     let mut to = None;
+    let mut native = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let a = a.to_str().ok_or(Fail::Usage)?;
-        if a == "--to" {
+        if a == "--native" {
+            native = true;
+        } else if a == "--to" {
             to = Some(PathBuf::from(it.next().ok_or(Error::Usage("--to: нужна папка библиотеки"))?));
         } else if let Some(v) = a.strip_prefix("--to=") {
             to = Some(PathBuf::from(v));
@@ -103,7 +107,7 @@ fn split_to(args: &[OsString]) -> Result<(Vec<String>, Option<PathBuf>), Fail> {
             pos.push(a.to_string());
         }
     }
-    Ok((pos, to))
+    Ok((pos, to, native))
 }
 
 /// Обработать очередь загрузок, печатая прогресс. С USER — через steamcmd, без него — через
@@ -267,10 +271,17 @@ fn run(args: &[OsString]) -> Result<i32, Fail> {
         ("game", "stats") => account::stats(&c, parse_appid(need(args, 2, "нужен APPID")?)?, json_flag(args, 3)?)?,
         ("game", "install" | "verify") => {
             let id = appid(args, 2)?;
-            let (pos, to) = split_to(&args[3..])?;
+            let (pos, to, native) = split_install(&args[3..])?;
             let user = pos.first().map(String::as_str);
-            if sub == "verify" && (user.is_some() || to.is_some()) {
+            if sub == "verify" && (user.is_some() || to.is_some() || native) {
                 return Err(Fail::Usage);
+            }
+            if native && user.is_some() {
+                return Err(Error::NativeNeedsLogin.into());
+            }
+            // Список купленных уже загружали — проверим нативность без сети; нет — решит хелпер.
+            if native && c.cached_owned_app(id).is_some_and(|a| !a.macos) {
+                return Err(Error::NoMacBuild(id).into());
             }
             // Пароль и Steam Guard steamcmd спросит в терминале один раз; дальше — сохранённый вход.
             if let Some(u) = user
@@ -278,7 +289,11 @@ fn run(args: &[OsString]) -> Result<i32, Fail> {
             {
                 c.steam_login(u)?;
             }
-            match c.enqueue_game(id, to.as_deref(), sub == "verify") {
+            let platform = native.then_some(Platform::Macos);
+            match c.enqueue_game_as(id, to.as_deref(), sub == "verify", platform) {
+                Ok(job) if job.platform == Platform::Macos => {
+                    eprintln!("==> в очереди (macOS, нативно): {id} → {}", job.dir.display())
+                }
                 Ok(job) => eprintln!("==> в очереди: {id} → {}", job.dir.display()),
                 Err(Error::AlreadyQueued(_)) => eprintln!("==> {id} уже в очереди"),
                 Err(e) => return Err(e.into()),
@@ -382,6 +397,10 @@ fn run(args: &[OsString]) -> Result<i32, Fail> {
                     None => "облако: ?".to_string(),
                     Some(r) => format!("облако: правил {}, файлов {}", r.len(), g.cloud.synced_files),
                 };
+                if g.platform == Platform::Macos {
+                    println!("{}\t{}\tmacOS, нативно", g.appid, g.name.as_deref().unwrap_or("?"));
+                    continue;
+                }
                 println!("{}\t{}\t{bridge}\t{cloud}", g.appid, g.name.as_deref().unwrap_or("?"));
             }
         }

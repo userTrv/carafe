@@ -11,6 +11,7 @@ use crate::Carafe;
 use crate::download::{DownloadEvent, DownloadRequest, DownloadStage, Downloader, StopFlag};
 use crate::error::{Error, Result};
 use crate::fsutil;
+use crate::native::Platform;
 use crate::process::Log;
 use crate::steamclient::{
     self, Account, Achievements, AppDepots, Credentials, DepotEvent, LoginEvent, OwnedApp, Playtime, RefreshToken,
@@ -22,6 +23,8 @@ pub const KEYCHAIN_SERVICE: &str = "dev.usertrv.carafe.steam";
 const KEYCHAIN_ACCOUNT: &str = "refresh-token";
 /// Имя устройства, которое видно в приложении Steam при подтверждении QR.
 pub const DEVICE_NAME: &str = "carafe (Mac)";
+/// Последний список купленных игр (с нативностью под macOS) — в каталоге carafe, без сети.
+pub const OWNED_CACHE: &str = "steam-owned.json";
 
 /// Где лежит refresh token. По умолчанию — [`Keychain`]; тесты и демо GUI берут [`MemoryStore`].
 pub trait TokenStore: Send + Sync {
@@ -178,15 +181,17 @@ impl Carafe {
         Ok(revoked)
     }
 
-    /// Все купленные игры аккаунта с отметкой установленных, по имени.
+    /// Все купленные игры аккаунта с отметкой установленных, по имени. Список запоминается в
+    /// [`OWNED_CACHE`]: потом его читает [`Carafe::cached_owned_app`] без сети.
     pub fn owned_games(&self) -> Result<Vec<OwnedGame>> {
         let (mut h, _) = self.steam_connect()?;
         let installed: std::collections::HashSet<u32> = self.game_locations()?.into_iter().map(|g| g.appid).collect();
-        let mut games: Vec<OwnedGame> = h
-            .owned_apps()?
-            .into_iter()
-            .map(|app| OwnedGame { installed: installed.contains(&app.appid), app })
-            .collect();
+        let apps = h.owned_apps()?;
+        if let Err(e) = self.save_owned_cache(&apps) {
+            self.log(Log::Output(format!("carafe: список игр не сохранён: {e}")));
+        }
+        let mut games: Vec<OwnedGame> =
+            apps.into_iter().map(|app| OwnedGame { installed: installed.contains(&app.appid), app }).collect();
         games.sort_by_cached_key(|g| (g.app.name.to_lowercase(), g.app.appid));
         Ok(games)
     }
@@ -212,6 +217,30 @@ impl Carafe {
             }
         };
         Ok(GameStats { playtime, achievements })
+    }
+
+    fn save_owned_cache(&self, apps: &[OwnedApp]) -> Result<()> {
+        let path = self.config.home.join(OWNED_CACHE);
+        fsutil::create_dir_all(&self.config.home)?;
+        let text = serde_json::to_vec(&serde_json::json!({ "apps": apps })).expect("owned json");
+        fsutil::write_atomic(&path, &text)
+    }
+
+    /// Купленные игры из последнего [`Carafe::owned_games`]; пусто — ещё не загружали.
+    pub fn cached_owned_games(&self) -> Vec<OwnedApp> {
+        #[derive(serde::Deserialize)]
+        struct C {
+            apps: Vec<OwnedApp>,
+        }
+        std::fs::read(self.config.home.join(OWNED_CACHE))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<C>(&b).ok())
+            .map(|c| c.apps)
+            .unwrap_or_default()
+    }
+
+    pub fn cached_owned_app(&self, appid: u32) -> Option<OwnedApp> {
+        self.cached_owned_games().into_iter().find(|a| a.appid == appid)
     }
 
     /// Депо и ветки игры. Без входа хелпер спрашивает Steam анонимно.
@@ -250,9 +279,10 @@ impl Downloader for SteamKitDownloader {
             return Err(Error::Interrupted);
         }
         let mut downloading = false;
-        let r = h.download(
+        let r = h.download_for(
             req.appid,
             &req.dir,
+            req.platform,
             req.branch.as_deref(),
             &req.depots,
             &mut |e| match e {
@@ -276,6 +306,9 @@ impl Downloader for SteamKitDownloader {
             Some(&|| stop.is_stopped()),
         )?;
         on_event(DownloadEvent::Log(format!("готово: файлов {}, без изменений {}", r.files, r.unchanged)));
+        if req.platform == Platform::Macos {
+            crate::native::mark_native(&req.dir, Some(r.launch))?;
+        }
         Ok(())
     }
 }
@@ -310,6 +343,10 @@ impl Downloader for AutoDownloader {
     }
 
     fn download(&self, req: &DownloadRequest, stop: &StopFlag, on_event: &mut dyn FnMut(DownloadEvent)) -> Result<()> {
+        // Нативные игры — только через свой вход: без него SteamKit2 честно ответит NotLoggedIn.
+        if req.platform == Platform::Macos {
+            return self.steamkit.download(req, stop, on_event);
+        }
         self.pick().download(req, stop, on_event)
     }
 }
@@ -357,8 +394,11 @@ mod tests {
         let games = c.owned_games().unwrap();
         assert_eq!(
             games.iter().map(|g| (g.app.appid, g.installed)).collect::<Vec<_>>(),
-            [(3405340, true), (1245620, false)]
+            [(3405340, true), (1245620, false), (413150, false)]
         );
+        // Список запомнился: нативность видна без сети.
+        assert!(c.cached_owned_app(413150).is_some_and(|a| a.macos));
+        assert!(c.cached_owned_app(3405340).is_some_and(|a| !a.macos));
 
         let st = c.steam_game_stats(3405340, "russian").unwrap();
         assert_eq!(st.playtime.map(|p| p.minutes), Some(754));
@@ -372,6 +412,7 @@ mod tests {
             branch: None,
             depots: vec![],
             verify: false,
+            platform: Platform::Windows,
         };
         let mut ev = vec![];
         SteamKitDownloader::new(c.clone()).download(&req, &StopFlag::default(), &mut |e| ev.push(e)).unwrap();
@@ -403,6 +444,50 @@ mod tests {
         assert_eq!(AutoDownloader::new(c.clone()).name(), "steamcmd");
         assert_eq!(store.load().unwrap(), None);
         assert!(!c.steam_logout().unwrap(), "второй выход — нечего отзывать");
+    }
+
+    #[test]
+    fn native_install_through_queue() {
+        let home = TestDir::new();
+        let store = Arc::new(MemoryStore::new(Some(Credentials {
+            account_name: "tester".into(),
+            refresh_token: RefreshToken::new("fake-refresh".into()),
+        })));
+        let c = carafe(home.path(), store);
+        let job = c.enqueue_game_as(413150, None, false, Some(Platform::Macos)).unwrap();
+        assert_eq!(job.platform, Platform::Macos);
+        assert_eq!(c.queue().jobs().unwrap()[0].platform, Platform::Macos, "платформа переживает файл очереди");
+        c.queue().run_until_empty(&AutoDownloader::new(c.clone())).unwrap();
+        let dir = home.path().join("games/413150");
+        assert_eq!(crate::native::platform_of(&dir), Platform::Macos);
+        let marker = std::fs::read_to_string(dir.join(crate::native::NATIVE_FILE)).unwrap();
+        assert!(marker.contains("Stardew Valley.app"), "{marker}");
+        assert_eq!(c.game_platform(413150).unwrap(), Some(Platform::Macos));
+        // Обновление — той же сборкой; Windows поверх нативной — нельзя.
+        assert!(matches!(
+            c.enqueue_game_as(413150, None, false, Some(Platform::Windows)),
+            Err(Error::PlatformMismatch { installed: Platform::Macos, .. })
+        ));
+        assert_eq!(c.enqueue_game(413150, None, true).unwrap().platform, Platform::Macos);
+    }
+
+    #[test]
+    fn native_needs_login() {
+        let home = TestDir::new();
+        let c = carafe(home.path(), Arc::new(MemoryStore::default()));
+        let req = DownloadRequest {
+            appid: 413150,
+            dir: home.path().into(),
+            branch: None,
+            depots: vec![],
+            verify: false,
+            platform: Platform::Macos,
+        };
+        // Без входа steamcmd не берётся: нативное — только через carafe login.
+        let r = AutoDownloader::new(c.clone()).download(&req, &StopFlag::default(), &mut |_| {});
+        assert!(matches!(r, Err(Error::NotLoggedIn)), "{r:?}");
+        let r = crate::SteamCmdDownloader::new(c, None).download(&req, &StopFlag::default(), &mut |_| {});
+        assert!(matches!(r, Err(Error::NativeNeedsLogin)), "{r:?}");
     }
 
     #[test]

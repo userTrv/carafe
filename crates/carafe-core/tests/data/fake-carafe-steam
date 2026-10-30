@@ -3,7 +3,11 @@
 # Ответы — по команде из запроса. Токен, как и у настоящего, приходит только через stdin.
 [ $# -eq 0 ] || { echo "fake: аргументы не нужны" >&2; exit 2; }
 
-echo '{"event":"ready","protocol":1,"version":"test"}'
+if [ -n "${FAKE_STEAM_OLD:-}" ]; then
+  echo '{"event":"ready","protocol":1,"version":"old"}'
+else
+  echo '{"event":"ready","protocol":1,"version":"test","features":["macos"]}'
+fi
 echo 'fake: старт' >&2
 
 ok() { printf '{"id":%s,"ok":true,"result":%s}\n' "$id" "$1"; }
@@ -27,7 +31,7 @@ while IFS= read -r line; do
         *) fail token_invalid "Steam не пустил: AccessDenied" ;;
       esac ;;
     *'"cmd":"owned_apps"'*)
-      ok '{"apps":[{"appid":3405340,"name":"Megabonk","type":"game","oslist":"windows","windows":true,"size_bytes":1100000000},{"appid":1245620,"name":"Only Mac","type":"game","oslist":"macos","windows":false,"size_bytes":null}]}' ;;
+      ok '{"apps":[{"appid":3405340,"name":"Megabonk","type":"game","oslist":"windows","windows":true,"size_bytes":1100000000},{"appid":1245620,"name":"Only Mac","type":"game","oslist":"macos","windows":false,"size_bytes":null,"macos":true,"macos_size_bytes":500,"macos_arch":"arm64"},{"appid":413150,"name":"Stardew Valley","type":"game","oslist":"windows,macos,linux","windows":true,"size_bytes":700,"macos":true,"macos_size_bytes":650,"macos_arch":null}]}' ;;
     *'"cmd":"app_info"'*)
       ok '{"appid":3405340,"name":"Megabonk","size_bytes":1100000000,"depots":[{"depotid":3405341,"name":null,"oslist":"windows","arch":"64","language":null,"size_bytes":1100000000,"manifests":{"public":"9007199254740993"},"dlc_appid":null,"install":true,"skip":null},{"depotid":3405342,"name":null,"oslist":"macos","arch":null,"language":null,"size_bytes":5,"manifests":{},"dlc_appid":null,"install":false,"skip":"не Windows"}],"branches":[{"name":"public","buildid":1,"time_updated":0,"password_required":false,"description":null}]}' ;;
     *'"cmd":"download"'*'"appid":2,'*|*'"appid":2,'*'"cmd":"download"'*)
@@ -37,6 +41,11 @@ while IFS= read -r line; do
         case "$l2" in *'"cmd":"cancel"'*) break ;; esac
       done
       fail cancelled "отменено" ;;
+    *'"cmd":"download"'*'"platform":"macos"'*)
+      event '"depot","depotid":413152,"manifest":"88","files":2,"total":650'
+      event '"progress","downloaded":0,"total":650'
+      event '"progress","downloaded":650,"total":650'
+      ok '{"appid":413150,"dir":"/tmp/carafe-test","downloaded":650,"files":2,"unchanged":0,"depots":[{"depotid":413152,"manifest":"88"}],"platform":"macos","launch":[{"executable":"Stardew Valley.app","arguments":null,"workingdir":null,"type":"default","description":null,"oslist":"macos","osarch":null,"betakey":null}]}' ;;
     *'"cmd":"download"'*)
       event '"depot","depotid":3405341,"manifest":"77","files":3,"total":300'
       event '"progress","downloaded":0,"total":300'

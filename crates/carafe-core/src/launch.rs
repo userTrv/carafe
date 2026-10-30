@@ -55,8 +55,13 @@ impl Carafe {
     /// С мостом: Steam Cloud pull (ошибка не мешает играть), хелпер моста, игра; хелпер живёт,
     /// пока игра не отключится от Steam, — лаунчер wine может выйти раньше; затем push.
     /// Без моста облака нет: хелпер облака — часть моста.
+    ///
+    /// Нативная macOS-игра ([`crate::native`]) запускается сама, без Wine, моста и облака carafe.
     pub fn run_game(&self, appid: u32, args: &[OsString], on_event: &mut dyn FnMut(LaunchEvent)) -> Result<i32> {
         let dir = self.installed_dir(appid)?;
+        if crate::native::platform_of(&dir) == crate::native::Platform::Macos {
+            return self.run_native(appid, &dir, args, on_event);
+        }
         let exe =
             game::find_game_exe(&dir, self.config.exe.as_deref()).ok_or_else(|| Error::ExeNotFound(dir.clone()))?;
         let wine = self.wine()?;

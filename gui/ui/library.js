@@ -156,13 +156,26 @@ document.addEventListener("click", (e) => {
 });
 document.addEventListener("keydown", (e) => e.key === "Escape" && closeMenu());
 
-function libMenu(anchor, { exclude, need, onPick }) {
+// choice — выбор сборки над списком папок: { options: [{ id, label, tag, need }], value }.
+// Выбранная сборка уходит в onPick вторым аргументом.
+function libMenu(anchor, { exclude, need, onPick, choice }) {
   closeMenu();
   const libs = (S.libs || []).filter((l) => l.path !== exclude);
   const el = document.createElement("div");
   el.className = "menu";
   el.setAttribute("role", "menu");
-  el.innerHTML = libs.length
+  let picked = choice?.value;
+  if (choice) need = choice.options.find((o) => o.id === picked)?.need ?? need;
+  const choiceHtml = choice
+    ? `<div class="menu-choice" role="group" aria-label="Как установить">${choice.options
+        .map(
+          (o) => `<button class="menu-item" role="menuitemradio" data-platform="${o.id}" aria-checked="${o.id === picked}">
+            <span class="radio" aria-hidden="true"></span><span class="grow"><b>${esc(o.label)}${o.tag ? `<i class="menu-tag">${o.tag}</i>` : ""}</b>
+            ${o.need ? `<small>${gb(o.need)}</small>` : ""}</span></button>`,
+        )
+        .join("")}</div>`
+    : "";
+  const libsHtml = () => libs.length
     ? libs
         .map((l) => {
           const short = need && l.freeBytes != null && l.freeBytes < need;
@@ -173,6 +186,7 @@ function libMenu(anchor, { exclude, need, onPick }) {
         })
         .join("")
     : `<div class="menu-empty">Других библиотек нет</div>`;
+  el.innerHTML = `${choiceHtml}<div class="menu-libs">${libsHtml()}</div>`;
   el.insertAdjacentHTML("beforeend", `<button class="menu-item menu-add" role="menuitem" data-add>${I.plus}<span class="grow"><b>Добавить папку</b></span></button>`);
   document.body.append(el);
   closeMenu.anchor = anchor;
@@ -184,11 +198,20 @@ function libMenu(anchor, { exclude, need, onPick }) {
   el.addEventListener("click", async (e) => {
     const b = e.target.closest(".menu-item");
     if (!b || b.disabled) return;
+    // Выбор сборки меню не закрывает: место на дисках пересчитывается под её размер.
+    if (b.dataset.platform) {
+      e.stopPropagation();
+      picked = b.dataset.platform;
+      need = choice.options.find((o) => o.id === picked)?.need ?? need;
+      el.querySelectorAll("[data-platform]").forEach((x) => x.setAttribute("aria-checked", String(x === b)));
+      el.querySelector(".menu-libs").innerHTML = libsHtml();
+      return;
+    }
     closeMenu();
     if (b.dataset.add !== undefined) {
       const path = await addLibrary();
-      if (path) onPick(path);
-    } else onPick(b.dataset.path);
+      if (path) onPick(path, picked);
+    } else onPick(b.dataset.path, picked);
   });
 }
 
@@ -205,14 +228,22 @@ function installButton(g) {
   return `<button class="btn btn-primary launch" data-install="${g.appid}" data-menu aria-haspopup="menu">${I.download}Установить</button>`;
 }
 
-async function install(appid, library) {
+async function install(appid, library, platform = "windows") {
   try {
-    await invoke("install", { appid, library });
-    toast(`В очереди: ${libName(library)}`, "ok");
+    await invoke("install", { appid, library, platform });
+    toast(`В очереди: ${libName(library)}${platform === "macos" ? " · macOS" : ""}`, "ok");
   } catch (e) {
     toast(e);
   }
   pollDownloads();
+}
+
+// Есть нативная сборка — выбор, как ставить; по умолчанию нативно. Только macOS — без выбора.
+function installChoice(g) {
+  if (!g?.macos) return null;
+  const mac = { id: "macos", label: "Нативно для macOS", tag: "РЕКОМЕНДУЕТСЯ", need: g.macosSizeBytes };
+  if (g.windows === false) return { options: [{ ...mac, tag: null }], value: "macos" };
+  return { options: [mac, { id: "windows", label: "Через carafe (Windows)", need: g.sizeBytes }], value: "macos" };
 }
 
 /* ---------- перенос ---------- */
@@ -253,7 +284,7 @@ main.addEventListener("click", (e) => {
     const appid = Number(b.dataset.install);
     const g = game(appid);
     if (!S.libs) loadLibs();
-    libMenu(b, { need: g?.sizeBytes, onPick: (p) => install(appid, p) });
+    libMenu(b, { need: g?.sizeBytes, choice: installChoice(g), onPick: (p, platform) => install(appid, p, platform) });
     return;
   }
   if (e.target.closest("[data-goto-downloads]")) {
@@ -452,9 +483,9 @@ function dlUpdate(row, d) {
 
 // `sig` — только устройство строки, без цифр: по нему решаем, пересобирать ли её.
 function dlRow(d, i, list, sig) {
-  const kind = DL_KIND[d.kind];
+  const kind = [DL_KIND[d.kind], d.platform === "macos" ? "MACOS" : ""].filter(Boolean).join(" · ");
   const paused = d.state === "paused" || d.state === "failed";
-  if (sig) return [d.state, d.kind, d.name, d.library, i === 0, i === list.length - 1].join("|");
+  if (sig) return [d.state, d.kind, d.platform, d.name, d.library, i === 0, i === list.length - 1].join("|");
   const g = { name: d.name, cover: d.cover };
   const n = dlNums(d);
   return `<div class="dl-row ${d.state}" data-appid="${d.appid}">

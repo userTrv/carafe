@@ -62,6 +62,10 @@ carafe downloads run
 carafe game run <appid>
 ```
 
+### Нативные macOS-игры
+
+У многих купленных игр есть своя сборка под Mac. В библиотеке такие отмечены `MAC`, а «Установить» предлагает выбор: «Нативно для macOS» (по умолчанию) или «Через carafe (Windows)». Нативная игра ставится в ту же библиотеку (`<папка>/<appid>/`, метка `.carafe-native`), переносится и считается так же, а запускается сама, без Wine, бутылки и моста. Steamworks в ней говорит с Steam для Mac напрямую, поэтому игре со Steam API нужен запущенный Steam; облако синхронизирует он же. Уже установленные Windows-игры остаются как есть. В bash-версии `game install --native` нет (нативные игры ставят Rust-версия и carafe.app), но запустить уже поставленную нативную игру `game run` умеет.
+
 ## CLI
 
 Полная справка: `carafe --help`. Основное:
@@ -76,8 +80,8 @@ carafe game run <appid>
 | `carafe bottle restore NAME [КОПИЯ]` | вернуть бутылку из резервной копии (по умолчанию свежей) |
 | `carafe login`, `carafe logout`, `carafe account` | вход в Steam по QR, выход, текущий аккаунт |
 | `carafe game owned` | все купленные игры аккаунта |
-| `carafe game install APPID [USER] [--to DIR]` | поставить в очередь; без `USER` через вход по QR, с `USER` через steamcmd |
-| `carafe game run APPID [ARGS...]` | облако вниз, мост, игра, облако вверх |
+| `carafe game install APPID [USER] [--to DIR] [--native]` | поставить в очередь; без `USER` через вход по QR, с `USER` через steamcmd; `--native` — нативная macOS-сборка без Wine (только вход по QR) |
+| `carafe game run APPID [ARGS...]` | облако вниз, мост, игра, облако вверх; нативная игра — сразу её `.app` |
 | `carafe game list`, `verify`, `move APPID DIR`, `import APPID [DIR]` | установленные игры, проверка файлов, перенос, импорт depot из консоли Steam |
 | `carafe library list\|add\|remove\|default\|du` | папки библиотек и место на дисках |
 | `carafe downloads [list\|run\|pause\|resume\|cancel\|top APPID]` | очередь загрузок |

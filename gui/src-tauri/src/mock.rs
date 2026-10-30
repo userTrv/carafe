@@ -26,6 +26,10 @@ struct MockGame {
     appid: AppId,
     name: &'static str,
     installed: bool,
+    /// Какая сборка стоит (или поставится).
+    platform: Platform,
+    /// Есть ли у игры нативная сборка для macOS.
+    macos: bool,
     /// Индекс в `State::libraries`.
     library: usize,
     size_gb: f64,
@@ -54,6 +58,7 @@ struct MockJob {
     done: u64,
     total: u64,
     error: Option<String>,
+    platform: Platform,
 }
 
 struct State {
@@ -72,22 +77,24 @@ struct State {
 }
 
 /// Игры аккаунта, которых нет среди установленных: появляются в библиотеке после входа.
-/// (appid, имя, ГБ, есть ли Windows-сборка)
-const OWNED_EXTRA: &[(AppId, &str, f64, bool)] = &[
-    (1091500, "Cyberpunk 2077", 65.0, true),
-    (1030300, "Hollow Knight: Silksong", 7.5, true),
-    (620, "Portal 2", 12.8, true),
-    (220, "Half-Life 2", 6.5, true),
-    (632470, "Disco Elysium", 20.0, true),
-    (504230, "Celeste", 1.2, true),
-    (105600, "Terraria", 0.5, true),
-    (1145360, "Hades", 15.0, true),
-    (892970, "Valheim", 1.7, true),
-    (646570, "Slay the Spire", 1.1, true),
-    (2420110, "Horizon Forbidden West", 150.0, true),
-    (1817070, "Marvel's Spider-Man Remastered", 75.0, true),
-    // Только Mac/Linux: ставить нечего.
-    (1, "Только для Mac (демо)", 0.0, false),
+/// (appid, имя, ГБ, есть ли Windows-сборка, есть ли нативная macOS-сборка)
+const OWNED_EXTRA: &[(AppId, &str, f64, bool, bool)] = &[
+    (1091500, "Cyberpunk 2077", 65.0, true, true),
+    (1030300, "Hollow Knight: Silksong", 7.5, true, true),
+    (620, "Portal 2", 12.8, true, false),
+    (220, "Half-Life 2", 6.5, true, false),
+    (632470, "Disco Elysium", 20.0, true, true),
+    (504230, "Celeste", 1.2, true, true),
+    (105600, "Terraria", 0.5, true, true),
+    (1145360, "Hades", 15.0, true, true),
+    (892970, "Valheim", 1.7, true, false),
+    (646570, "Slay the Spire", 1.1, true, true),
+    (2420110, "Horizon Forbidden West", 150.0, true, false),
+    (1817070, "Marvel's Spider-Man Remastered", 75.0, true, false),
+    // Только Mac: ставится лишь нативно.
+    (1, "Только для Mac (демо)", 0.4, false, true),
+    // Ни Windows, ни macOS: ставить нечего.
+    (2, "Только для Linux (демо)", 0.0, false, false),
 ];
 
 /// (appid, минут всего, за 2 недели, сколько назад запускали, достижений всего, открыто)
@@ -298,14 +305,16 @@ const MOCK_QR: [&str; 2] = [
 impl State {
     /// После входа: купленные, но не установленные игры — в библиотеку.
     fn add_owned(&mut self) {
-        for &(appid, name, size_gb, windows) in OWNED_EXTRA {
-            if !windows || self.game(appid).is_some() {
+        for &(appid, name, size_gb, windows, macos) in OWNED_EXTRA {
+            if !(windows || macos) || self.game(appid).is_some() {
                 continue;
             }
             self.games.push(MockGame {
                 appid,
                 name,
                 installed: false,
+                platform: Platform::Windows,
+                macos,
                 library: self.default_library,
                 size_gb,
                 bridge: BridgeState::Unknown,
@@ -367,6 +376,8 @@ impl MockBackend {
         let games = vec![
             MockGame {
                 appid: 3405340,
+                platform: Platform::Windows,
+                macos: false,
                 name: "Megabonk",
                 library: 0,
                 installed: true,
@@ -382,6 +393,8 @@ impl MockBackend {
             },
             MockGame {
                 appid: 1145350,
+                platform: Platform::Windows,
+                macos: true,
                 name: "Hades II",
                 library: 1,
                 installed: true,
@@ -396,6 +409,8 @@ impl MockBackend {
             },
             MockGame {
                 appid: 2379780,
+                platform: Platform::Windows,
+                macos: true,
                 name: "Balatro",
                 library: 0,
                 installed: true,
@@ -411,6 +426,8 @@ impl MockBackend {
             },
             MockGame {
                 appid: 1794680,
+                platform: Platform::Windows,
+                macos: true,
                 name: "Vampire Survivors",
                 library: 0,
                 installed: true,
@@ -422,6 +439,9 @@ impl MockBackend {
             },
             MockGame {
                 appid: 413150,
+                // Стоит нативно: без Wine, моста и облака carafe.
+                platform: Platform::Macos,
+                macos: true,
                 name: "Stardew Valley",
                 library: 1,
                 installed: true,
@@ -433,6 +453,8 @@ impl MockBackend {
             },
             MockGame {
                 appid: 1245620,
+                platform: Platform::Windows,
+                macos: false,
                 name: "Elden Ring",
                 library: 1,
                 installed: false,
@@ -444,6 +466,8 @@ impl MockBackend {
             },
             MockGame {
                 appid: 1086940,
+                platform: Platform::Windows,
+                macos: true,
                 name: "Baldur's Gate 3",
                 library: 1,
                 installed: false,
@@ -455,6 +479,8 @@ impl MockBackend {
             },
             MockGame {
                 appid: 1091500,
+                platform: Platform::Windows,
+                macos: true,
                 name: "Cyberpunk 2077",
                 library: 0,
                 installed: false,
@@ -466,6 +492,8 @@ impl MockBackend {
             },
             MockGame {
                 appid: 367520,
+                platform: Platform::Windows,
+                macos: true,
                 name: "Hollow Knight",
                 library: 2,
                 installed: true,
@@ -524,6 +552,7 @@ impl MockBackend {
                 done: 48_800_000_000,
                 total: 49_000_000_000,
                 error: None,
+                platform: Platform::Windows,
             }]
         } else {
             vec![
@@ -536,6 +565,7 @@ impl MockBackend {
                     done: 9_100_000_000,
                     total: 49_000_000_000,
                     error: None,
+                    platform: Platform::Windows,
                 },
                 MockJob {
                     appid: 1086940,
@@ -546,6 +576,7 @@ impl MockBackend {
                     done: 0,
                     total: 122_000_000_000,
                     error: None,
+                    platform: Platform::Windows,
                 },
             ]
         };
@@ -575,6 +606,29 @@ impl MockBackend {
         let st = Arc::downgrade(&state);
         std::thread::spawn(move || download_loop(st));
         Self { state }
+    }
+
+    /// Нативная игра: ни облака carafe, ни моста — только «В игре»; Steamworks нужен Steam.
+    fn launch_native(&self, name: &str, events: Events) -> Result<i32> {
+        stage(events, Stage::CloudPull, StageStatus::Skipped);
+        stage(events, Stage::Bridge, StageStatus::Skipped);
+        if !self.lock().steam {
+            let message = "игре нужен запущенный Steam для Mac: открой Steam и запусти игру снова";
+            stage(
+                events,
+                Stage::Game,
+                StageStatus::Failed {
+                    message: message.into(),
+                },
+            );
+            return Err(BackendError::new(message));
+        }
+        stage(events, Stage::Game, StageStatus::Active);
+        log(events, format!("==> запускаю нативно {name}.app"));
+        wait(5000);
+        stage(events, Stage::Game, StageStatus::Done);
+        stage(events, Stage::CloudPush, StageStatus::Skipped);
+        Ok(0)
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -689,19 +743,36 @@ impl Backend for MockBackend {
         Ok(st
             .games
             .iter()
-            .map(|g| Game {
-                appid: g.appid,
-                name: g.name.into(),
-                cover: Cover::for_app(g.appid),
-                installed: g.installed,
-                size_bytes: Some((g.size_gb * 1e9) as u64),
-                library: g.installed.then(|| st.libraries[g.library].path.clone()),
-                available: !g.installed || st.libraries[g.library].available,
-                bridge: g.bridge,
-                cloud: CloudSummary {
-                    state: g.cloud,
-                    last_sync: g.last_sync_ago.map(|a| t - a),
-                },
+            .map(|g| {
+                let native = g.installed && g.platform == Platform::Macos;
+                Game {
+                    appid: g.appid,
+                    name: g.name.into(),
+                    cover: Cover::for_app(g.appid),
+                    installed: g.installed,
+                    size_bytes: Some((g.size_gb * 1e9) as u64),
+                    library: g.installed.then(|| st.libraries[g.library].path.clone()),
+                    available: !g.installed || st.libraries[g.library].available,
+                    bridge: if native {
+                        BridgeState::NotNeeded
+                    } else {
+                        g.bridge
+                    },
+                    cloud: CloudSummary {
+                        state: if native {
+                            CloudState::Unavailable
+                        } else {
+                            g.cloud
+                        },
+                        last_sync: g.last_sync_ago.map(|a| t - a),
+                    },
+                    platform: if g.installed {
+                        g.platform
+                    } else {
+                        Platform::Windows
+                    },
+                    arch: native.then(|| "arm64".to_string()),
+                }
             })
             .collect())
     }
@@ -743,7 +814,11 @@ impl Backend for MockBackend {
                 )));
             }
         }
-        let (name, files, bridge) = self.with_game(appid, |g| (g.name, g.files, g.bridge))?;
+        let (name, files, bridge, platform) =
+            self.with_game(appid, |g| (g.name, g.files, g.bridge, g.platform))?;
+        if platform == Platform::Macos {
+            return self.launch_native(name, events);
+        }
         if !self.state.lock().expect("mock state").steam {
             return Err(BackendError::new("Steam для Mac не запущен"));
         }
@@ -1048,24 +1123,36 @@ impl Backend for MockBackend {
         let mut out: Vec<OwnedGame> = st
             .games
             .iter()
-            .map(|g| OwnedGame {
-                appid: g.appid,
-                name: g.name.into(),
-                cover: Cover::for_app(g.appid),
-                installed: g.installed,
-                windows: true,
-                size_bytes: Some((g.size_gb * 1e9) as u64),
+            .map(|g| {
+                let windows = OWNED_EXTRA
+                    .iter()
+                    .find(|o| o.0 == g.appid)
+                    .is_none_or(|o| o.3);
+                let size = Some((g.size_gb * 1e9) as u64);
+                OwnedGame {
+                    appid: g.appid,
+                    name: g.name.into(),
+                    cover: Cover::for_app(g.appid),
+                    installed: g.installed,
+                    windows,
+                    size_bytes: size.filter(|_| windows),
+                    macos: g.macos,
+                    macos_size_bytes: size.filter(|_| g.macos),
+                }
             })
             .collect();
-        for &(appid, name, size_gb, windows) in OWNED_EXTRA {
+        for &(appid, name, size_gb, windows, macos) in OWNED_EXTRA {
             if !out.iter().any(|g| g.appid == appid) {
+                let size = Some((size_gb * 1e9) as u64);
                 out.push(OwnedGame {
                     appid,
                     name: name.into(),
                     cover: Cover::for_app(appid),
                     installed: false,
                     windows,
-                    size_bytes: windows.then_some((size_gb * 1e9) as u64),
+                    size_bytes: size.filter(|_| windows),
+                    macos,
+                    macos_size_bytes: size.filter(|_| macos),
                 });
             }
         }
@@ -1130,7 +1217,7 @@ impl Backend for MockBackend {
         }))
     }
 
-    fn install(&self, appid: AppId, library: Option<&Path>) -> Result<()> {
+    fn install(&self, appid: AppId, library: Option<&Path>, platform: Platform) -> Result<()> {
         let mut st = self.lock();
         let lib = match library {
             Some(p) => st.library_index(p)?,
@@ -1146,6 +1233,10 @@ impl Backend for MockBackend {
             .game(appid)
             .ok_or_else(|| BackendError::new(format!("нет игры {appid}")))?;
         let (installed, size, glib) = (g.installed, (g.size_gb * 1e9) as u64, g.library);
+        let platform = if installed { g.platform } else { platform };
+        if platform == Platform::Macos && !g.macos {
+            return Err(BackendError::new("у игры нет сборки для macOS"));
+        }
         if installed && glib != lib {
             return Err(BackendError::new(
                 "игра уже установлена в другой библиотеке",
@@ -1170,6 +1261,7 @@ impl Backend for MockBackend {
             done: 0,
             total: if installed { size / 20 } else { size },
             error: None,
+            platform,
         });
         Ok(())
     }
@@ -1261,6 +1353,7 @@ impl Backend for MockBackend {
                     speed,
                     eta_secs: speed.map(|s| j.total.saturating_sub(j.done) / s.max(1)),
                     error: j.error.clone(),
+                    platform: j.platform,
                 }
             })
             .collect())
@@ -1349,11 +1442,12 @@ fn download_loop(state: std::sync::Weak<Mutex<State>>) {
                 }
             }
             DownloadStage::Committing => {
-                let (appid, lib) = (j.appid, j.library);
+                let (appid, lib, platform) = (j.appid, j.library, j.platform);
                 st.jobs.remove(active);
                 if let Some(g) = st.games.iter_mut().find(|g| g.appid == appid) {
                     g.installed = true;
                     g.library = lib;
+                    g.platform = platform;
                 }
             }
         }

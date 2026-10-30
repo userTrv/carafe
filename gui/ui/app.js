@@ -315,7 +315,9 @@ function go(view, appid = null) {
   if (view === "library") renderLibrary();
   if (view === "game") {
     renderGame();
-    if (!S.cloud[appid] && game(appid)?.installed) loadCloud(appid);
+    const gg = game(appid);
+    // У нативной игры облако — в самом Steam, carafe его не трогает.
+    if (!S.cloud[appid] && gg?.installed && gg.platform !== "macos") loadCloud(appid);
     loadStats(appid);
   }
   if (view === "setup") {
@@ -439,6 +441,7 @@ function gameStatus(g) {
   if (running(`launch:${g.appid}`)) return ["ok", "ИДЁТ"];
   if (g.available === false) return ["", "ДИСК ОТКЛЮЧЁН"];
   if (running(`move:${g.appid}`)) return ["warn", "ПЕРЕНОС"];
+  if (g.platform === "macos") return ["ok", "MACOS"];
   if (g.cloud.state === "conflict") return ["warn", "КОНФЛИКТ ОБЛАКА"];
   if (g.bridge === "notBuilt") return ["warn", "МОСТ НЕ СОБРАН"];
   if (g.bridge === "ready") return ["ok", "МОСТ ГОТОВ"];
@@ -480,9 +483,11 @@ function renderLibraryBody() {
 function heroHtml(g) {
   const live = running(`launch:${g.appid}`);
   const e = engine();
+  const native = g.platform === "macos";
   const tags = [
-    e?.d3dmetal ? "D3DMETAL" : null,
-    BRIDGE[g.bridge].tag,
+    native ? "MACOS" : null,
+    !native && e?.d3dmetal ? "D3DMETAL" : null,
+    native ? null : BRIDGE[g.bridge].tag,
     g.cloud.lastSync ? `ОБЛАКО · ${ago(g.cloud.lastSync)}` : null,
     size(g.sizeBytes),
   ].filter(Boolean);
@@ -539,18 +544,22 @@ function ownedCard(g, i) {
     ? d.state === "active"
       ? `${pct}%`
       : { queued: "В ОЧЕРЕДИ", paused: "ПАУЗА", failed: "ОШИБКА" }[d.state]
-    : g.windows === false
-      ? "НЕТ WINDOWS"
+    : noBuild(g)
+      ? "НЕТ СБОРКИ"
       : null;
+  const bytes = g.macos ? g.macosSizeBytes || g.sizeBytes : g.sizeBytes;
   return `
-    <button class="card owned rise ${g.windows === false ? "faded" : ""}" data-open="${g.appid}" style="animation-delay:${Math.min(i, 12) * 30}ms">
+    <button class="card owned rise ${noBuild(g) ? "faded" : ""}" data-open="${g.appid}" style="animation-delay:${Math.min(i, 12) * 30}ms">
       <span class="cover">${cover(g)}${badge ? `<span class="tag" data-dl-tag="${g.appid}">${badge}</span>` : ""}</span>
       <span class="card-meta">
-        <span class="card-row"><span class="card-name">${esc(g.name)}</span><span class="card-size">${esc(size(g.sizeBytes) || "")}</span></span>
+        <span class="card-row"><span class="card-name">${esc(g.name)}</span><span class="card-size">${g.macos ? `<span class="mac-mark" title="Есть сборка для macOS">MAC</span>` : ""}${esc(size(bytes) || "")}</span></span>
         ${d ? `<span class="bar" data-dl-bar="${g.appid}" role="progressbar" aria-label="Загрузка" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><i style="transform:scaleX(${pct / 100})"></i></span>` : ""}
       </span>
     </button>`;
 }
+
+// Ставить нечего: ни Windows-, ни macOS-сборки.
+const noBuild = (g) => g.windows === false && !g.macos;
 
 function skelGrid(n) {
   return `<div class="grid" aria-hidden="true">${Array.from(
@@ -639,7 +648,7 @@ function sheetHtml(g) {
         <dl class="label" id="label"></dl>
       </section>
       ${
-        g.installed
+        g.installed && g.platform !== "macos"
           ? `<section class="sheet-sec" id="sec-cloud" aria-labelledby="h-cloud">
               <div class="panel-head"><h3 id="h-cloud">Steam Cloud</h3>
                 <button class="icon-btn" id="cloud-refresh" aria-label="Обновить статус облака">${I.refresh}</button></div>
@@ -735,7 +744,7 @@ function renderActions() {
   const t = task(`launch:${g.appid}`);
   let main_;
   if (!g.installed) {
-    main_ = g.windows === false ? `<button class="btn btn-primary launch" disabled>Нет Windows-сборки</button>` : installButton(g);
+    main_ = noBuild(g) ? `<button class="btn btn-primary launch" disabled>Нет сборки для macOS и Windows</button>` : installButton(g);
   } else if (g.available === false) {
     main_ = `<button class="btn btn-primary launch" disabled>${I.disk}Диск отключён</button>`;
   } else if (t?.running) {
@@ -768,14 +777,19 @@ function renderActions() {
   const err = $("#launch-err");
   if (err) {
     const fail = t && !t.running && t.ok === false && t.error;
+    // Нативной игре со Steamworks нужен Steam для Mac — открыть его прямо отсюда.
+    const steam = fail && g.platform === "macos" && /Steam для Mac/.test(t.error);
     const html = fail
       ? `<div class="notice" style="max-width:560px">${I.alert}<span class="grow">${esc(t.error)}</span>
+          ${steam ? `<button class="btn btn-sm" id="open-steam">${I.steam}Открыть Steam</button>` : ""}
           <button class="btn btn-sm" data-sheet="log">Лог</button></div>`
       : "";
     if (err.dataset.html !== html) {
       err.innerHTML = html;
       err.dataset.html = html;
     }
+    const os = $("#open-steam");
+    if (os) os.onclick = () => start("fix", { check: "steam" }, "fix:steam");
   }
 }
 
@@ -923,7 +937,14 @@ function renderLabel() {
   const e = engine();
   const p = S.settings?.profile;
   const rows = [];
-  if (g.installed) {
+  if (g.installed && g.platform === "macos") {
+    const arch = { arm64: "Apple Silicon", universal: "Apple Silicon", x86_64: "Intel · Rosetta" }[g.arch];
+    rows.push(
+      ["Сборка", `macOS${arch ? ` · ${arch}` : ""}`, "ok"],
+      ["Steam", "через Steam для Mac", ""],
+      ["Папка", g.library ? `${libName(g.library)}${g.available === false ? " · отключена" : ""}` : "—", g.available === false ? "warn" : ""],
+    );
+  } else if (g.installed) {
     const checks = S.env?.env.checks || [];
     const okCheck = (id) => checks.find((c) => c.id === id)?.ok;
     const c = CLOUD[S.cloud[g.appid]?.data?.summary || g.cloud.state];
@@ -938,7 +959,9 @@ function renderLabel() {
       ["Бутылка", p ? p.bottle : "…", ""],
     );
   } else {
-    rows.push(["Windows", g.windows === false ? "нет сборки" : "есть", g.windows === false ? "warn" : "ok"], ["Папка", "не установлена", ""]);
+    rows.push(["Windows", g.windows === false ? "нет сборки" : "есть", g.windows === false ? "warn" : "ok"]);
+    if (g.macos !== undefined) rows.push(["macOS", g.macos ? "есть нативная" : "нет сборки", g.macos ? "ok" : ""]);
+    rows.push(["Папка", "не установлена", ""]);
   }
   if (g.sizeBytes) rows.push(["Размер", size(g.sizeBytes), ""]);
   el.innerHTML = rows.map(([k, v, d]) => `<dt>${k}</dt><dd>${dot(d)}${esc(v)}</dd>`).join("");

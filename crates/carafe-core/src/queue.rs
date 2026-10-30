@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use crate::download::{DownloadEvent, DownloadRequest, DownloadStage, Downloader, StopFlag};
 use crate::error::{Error, Result};
 use crate::fsutil::{self, FileLock};
+use crate::native::{self, Platform};
 use crate::vdf::{self, Obj, Value};
 use crate::{Carafe, Log};
 
@@ -92,6 +93,8 @@ pub struct Job {
     pub error: Option<String>,
     /// Папку игры создала эта загрузка: при отмене установки её можно удалить целиком.
     pub created_dir: bool,
+    /// Windows-сборка или нативная macOS. В файле очереди — `platform`, нет ключа — Windows.
+    pub platform: Platform,
 }
 
 impl Job {
@@ -111,6 +114,7 @@ impl Job {
             eta: None,
             error: None,
             created_dir: false,
+            platform: Platform::Windows,
         }
     }
 
@@ -121,6 +125,7 @@ impl Job {
             branch: self.branch.clone(),
             depots: self.depots.clone(),
             verify: self.kind != JobKind::Update,
+            platform: self.platform,
         }
     }
 }
@@ -422,6 +427,15 @@ impl Queue {
     /// Папка игры перед загрузкой. Создаём только сам `<appid>/`: если библиотеки нет (диск
     /// отключён), не плодим её на системном диске.
     fn prepare_dir(&self, job: &mut Job) -> Result<()> {
+        self.prepare_dir_inner(job)?;
+        // Метка — до первых файлов: недокачанная нативная игра не примется за Windows-игру.
+        if job.platform == Platform::Macos {
+            native::mark_native(&job.dir, None)?;
+        }
+        Ok(())
+    }
+
+    fn prepare_dir_inner(&self, job: &mut Job) -> Result<()> {
         if job.dir.is_dir() {
             return Ok(());
         }
@@ -560,6 +574,7 @@ fn read_jobs(file: &Path) -> Result<Vec<Job>> {
             eta: None,
             error: opt("error"),
             created_dir: o.str("created") == Some("1"),
+            platform: o.str("platform").and_then(Platform::parse).unwrap_or_default(),
         });
     }
     Ok(out)
@@ -593,6 +608,7 @@ fn format_jobs(jobs: &[Job]) -> String {
             opt("total", (j.total > 0).then(|| j.total.to_string()));
             opt("error", j.error.clone());
             opt("created", j.created_dir.then(|| "1".into()));
+            opt("platform", (j.platform != Platform::Windows).then(|| j.platform.as_str().into()));
             (i.to_string(), Value::Obj(Obj(o)))
         })
         .collect();
