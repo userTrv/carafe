@@ -20,6 +20,7 @@ mod fsutil;
 pub mod game;
 pub mod launch;
 pub mod library;
+pub mod native;
 mod process;
 pub mod queue;
 pub mod release;
@@ -46,6 +47,7 @@ pub use fsutil::human_bytes;
 pub use game::SteamApiDll;
 pub use launch::LaunchEvent;
 pub use library::{DiskSpace, GameLocation, LibraryFolder, LibraryInfo, MoveKind, MoveProgress};
+pub use native::{LaunchEntry, MachArch, NativeInfo, NativeTarget, Platform};
 pub use process::{Log, exit_code};
 pub use queue::{Job, JobKind, JobState, Queue, QueueEvent};
 pub use release::{Manifest, Release};
@@ -88,6 +90,9 @@ pub struct GameInfo {
     pub dir: PathBuf,
     /// Папка библиотеки, где лежит игра.
     pub library: PathBuf,
+    /// Windows (через Wine) или нативная macOS-сборка.
+    pub platform: Platform,
+    /// Что запускается: exe игры или, у нативной, бинарник из `.app`.
     pub exe: Option<PathBuf>,
     pub steam_api: Option<SteamApiDll>,
     pub bridge: BridgeState,
@@ -139,10 +144,16 @@ impl Carafe {
         }
         let dir = loc.dir;
         let steam_api = game::steam_api_dll(&dir);
+        let platform = native::platform_of(&dir);
+        let exe = match platform {
+            Platform::Macos => native::find_target(&dir).map(|t| t.program),
+            Platform::Windows => game::find_game_exe(&dir, self.config.exe.as_deref()).filter(|e| e.is_file()),
+        };
         Ok(GameInfo {
             appid,
-            name: self.cached_app_info(appid).and_then(|i| i.name),
-            exe: game::find_game_exe(&dir, self.config.exe.as_deref()).filter(|e| e.is_file()),
+            name: self.cached_app_info(appid).and_then(|i| i.name).or(loc.name),
+            platform,
+            exe,
             bridge: self.bridge_state(steam_api.as_ref())?,
             cloud: cloud::summary(&dir, self.cached_cloud_rules(appid)),
             steam_api,

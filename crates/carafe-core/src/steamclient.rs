@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 
 use crate::Logger;
 use crate::error::{Error, Result};
+use crate::native::{LaunchEntry, Platform};
 use crate::process::Log;
 
 pub const PROTOCOL: u64 = 1;
@@ -81,7 +82,7 @@ impl std::fmt::Display for LoginEvent {
 }
 
 /// Игра из лицензий аккаунта.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
 pub struct OwnedApp {
     pub appid: u32,
     pub name: String,
@@ -92,15 +93,30 @@ pub struct OwnedApp {
     pub windows: bool,
     /// Сумма размеров этих депо из appinfo: примерно столько займёт игра.
     pub size_bytes: Option<u64>,
+    /// Есть ли нативная сборка для macOS: `oslist` с macos и macOS-депо в лицензии.
+    #[serde(default)]
+    pub macos: bool,
+    /// Сколько займёт macOS-сборка.
+    #[serde(default)]
+    pub macos_size_bytes: Option<u64>,
+    /// `arm64`, если appinfo говорит, что сборка для Apple Silicon; обычно не говорит — `None`.
+    #[serde(default)]
+    pub macos_arch: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct AppDepots {
     pub appid: u32,
     pub name: String,
+    /// Для какой платформы выбраны депо (`install`); старый хелпер не пишет — Windows.
+    #[serde(default)]
+    pub platform: Platform,
     pub size_bytes: u64,
     pub depots: Vec<Depot>,
     pub branches: Vec<Branch>,
+    /// Есть ли нативная macOS-сборка.
+    #[serde(default)]
+    pub macos: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -184,6 +200,9 @@ pub struct DownloadResult {
     /// Файлы, которые уже были на месте (тот же размер и SHA-1).
     pub unchanged: u64,
     pub depots: Vec<DepotManifest>,
+    /// Варианты запуска из appinfo под платформу загрузки.
+    #[serde(default)]
+    pub launch: Vec<LaunchEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -204,6 +223,8 @@ pub struct SteamHelper {
     stdin: Option<ChildStdin>,
     rx: mpsc::Receiver<Line>,
     next_id: u64,
+    /// `features` из `ready`: что хелпер умеет сверх протокола 1 (`macos`).
+    features: Vec<String>,
 }
 
 impl std::fmt::Debug for SteamHelper {
@@ -233,7 +254,7 @@ impl SteamHelper {
         if let Some(err) = child.stderr.take() {
             thread::spawn(move || pump_log(err, log));
         }
-        let mut h = SteamHelper { stdin: child.stdin.take(), child, rx, next_id: 1 };
+        let mut h = SteamHelper { stdin: child.stdin.take(), child, rx, next_id: 1, features: vec![] };
         let ready = h.next_message(Instant::now() + READY_TIMEOUT)?;
         if ready["event"] != "ready" {
             return Err(Error::SteamProtocol("хелпер не прислал ready".into()));
@@ -244,7 +265,17 @@ impl SteamHelper {
                 ready["protocol"]
             )));
         }
+        h.features = ready["features"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|f| f.as_str().map(String::from)).collect())
+            .unwrap_or_default();
         Ok(h)
+    }
+
+    /// Умеет ли хелпер `feature` (из `ready`). Старый хелпер без `macos` молча скачал бы
+    /// Windows-сборку вместо нативной — поэтому ядро спрашивает до запроса.
+    pub fn supports(&self, feature: &str) -> bool {
+        self.features.iter().any(|f| f == feature)
     }
 
     fn next_message(&mut self, deadline: Instant) -> Result<Value> {
@@ -409,6 +440,19 @@ impl SteamHelper {
         self.simple("app_info", json!({ "appid": appid }))
     }
 
+    /// Депо под платформу: для macOS `install` отмечает macOS-депо.
+    pub fn app_info_for(&mut self, appid: u32, platform: Platform) -> Result<AppDepots> {
+        if platform == Platform::Windows {
+            return self.app_info(appid);
+        }
+        self.need("macos")?;
+        self.simple("app_info", json!({ "appid": appid, "platform": platform.as_str() }))
+    }
+
+    fn need(&self, feature: &str) -> Result<()> {
+        if self.supports(feature) { Ok(()) } else { Err(Error::HelperTooOld) }
+    }
+
     /// Скачать Windows-депо `appid` в `dir`. `depots` пустой — какие выберет хелпер;
     /// `branch: None` — public.
     pub fn download(
@@ -420,8 +464,27 @@ impl SteamHelper {
         on_event: &mut dyn FnMut(DepotEvent),
         cancel: Option<&dyn Fn() -> bool>,
     ) -> Result<DownloadResult> {
+        self.download_for(appid, dir, Platform::Windows, branch, depots, on_event, cancel)
+    }
+
+    /// Скачать сборку `platform`: для macOS — нативные депо (с битом исполнения и симлинками).
+    #[allow(clippy::too_many_arguments)]
+    pub fn download_for(
+        &mut self,
+        appid: u32,
+        dir: &Path,
+        platform: Platform,
+        branch: Option<&str>,
+        depots: &[u32],
+        on_event: &mut dyn FnMut(DepotEvent),
+        cancel: Option<&dyn Fn() -> bool>,
+    ) -> Result<DownloadResult> {
         let dir = dir.to_str().ok_or(Error::Usage("путь к папке игры — не UTF-8"))?;
         let mut args = json!({ "appid": appid, "dir": dir });
+        if platform != Platform::Windows {
+            self.need("macos")?;
+            args["platform"] = platform.as_str().into();
+        }
         if !depots.is_empty() {
             args["depots"] = json!(depots);
         }
@@ -551,10 +614,13 @@ pub(crate) mod tests {
         assert_eq!(format!("{c:?}").matches("fake-refresh").count(), 0, "токен не печатается в Debug");
 
         let apps = h.owned_apps().unwrap();
-        assert_eq!(apps.len(), 2);
+        assert_eq!(apps.len(), 3);
         assert_eq!(apps[0].name, "Megabonk");
         assert_eq!((apps[0].windows, apps[0].size_bytes), (true, Some(1_100_000_000)));
+        assert_eq!((apps[0].macos, apps[0].macos_size_bytes), (false, None), "старые поля — по умолчанию");
         assert_eq!((apps[1].windows, apps[1].size_bytes), (false, None));
+        assert_eq!((apps[1].macos, apps[1].macos_arch.as_deref()), (true, Some("arm64")));
+        assert_eq!((apps[2].macos, apps[2].macos_size_bytes, apps[2].windows), (true, Some(650), true));
 
         let played = h.playtime().unwrap();
         assert_eq!(
@@ -623,6 +689,29 @@ pub(crate) mod tests {
         assert!(matches!(r, Err(Error::Interrupted)), "{r:?}");
         // После отмены сессия жива.
         assert_eq!(h.app_info(3405340).unwrap().name, "Megabonk");
+    }
+
+    #[test]
+    fn native_download_and_old_helper() {
+        let (mut h, _) = spawn();
+        assert!(h.supports("macos"));
+        let r = h
+            .download_for(413150, Path::new("/tmp/carafe-test"), Platform::Macos, None, &[], &mut |_| {}, None)
+            .unwrap();
+        assert_eq!(r.depots[0].depotid, 413152);
+        assert_eq!(r.launch, [LaunchEntry { executable: "Stardew Valley.app".into(), ..Default::default() }]);
+
+        // Хелпер без `macos` в features: нативный запрос до него не доходит.
+        let d = crate::fsutil::testdir::TestDir::new();
+        let old = d.file("old-helper", format!("#!/bin/sh\nFAKE_STEAM_OLD=1 exec '{}'\n", fake().display()).as_bytes());
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut h = SteamHelper::spawn(&old, Arc::new(|_| {})).unwrap();
+        assert!(!h.supports("macos"));
+        let r = h.download_for(413150, Path::new("/tmp/x"), Platform::Macos, None, &[], &mut |_| {}, None);
+        assert!(matches!(r, Err(Error::HelperTooOld)), "{r:?}");
+        assert!(matches!(h.app_info_for(413150, Platform::Macos), Err(Error::HelperTooOld)));
+        assert_eq!(h.app_info_for(3405340, Platform::Windows).unwrap().platform, Platform::Windows);
     }
 
     #[test]

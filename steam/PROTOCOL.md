@@ -1,6 +1,6 @@
 # carafe-steam: протокол
 
-`carafe-steam` — хелпер carafe на [SteamKit2](https://github.com/SteamRE/SteamKit) (LGPL-2.1): вход в Steam по QR, список купленных игр, депо и загрузка Windows-сборки. Ядро (`crates/carafe-core/src/steamclient.rs`) запускает его как дочерний процесс и говорит с ним JSON-строками.
+`carafe-steam` — хелпер carafe на [SteamKit2](https://github.com/SteamRE/SteamKit) (LGPL-2.1): вход в Steam по QR, список купленных игр, депо и загрузка Windows-сборки или нативной macOS-сборки. Ядро (`crates/carafe-core/src/steamclient.rs`) запускает его как дочерний процесс и говорит с ним JSON-строками.
 
 > **Риск.** Это сторонний клиент Steam. Valve такие клиенты (SteamKit2, DepotDownloader, steamcmd-обёртки) терпит, но официально не поддерживает: протокол может поменяться, а аккаунт формально подпадает под правила подписчика Steam.
 
@@ -23,8 +23,14 @@
 При старте хелпер пишет:
 
 ```json
-{"event":"ready","protocol":1,"version":"1.0.0"}
+{"event":"ready","protocol":1,"version":"1.0.0","features":["macos"]}
 ```
+
+`features` — что хелпер умеет сверх протокола 1; новые поля и команды добавляются так, что старое ядро их просто не замечает. Хелпер без `features` (или без нужного в нём) ядро считает старым и не шлёт ему запросов, которых тот не поймёт: иначе, например, `download` с `platform` молча скачал бы Windows-сборку.
+
+| feature | что даёт |
+|---|---|
+| `macos` | поле `platform` в `app_info` и `download`, нативность в `owned_apps`, `launch` в ответах |
 
 ### Запрос
 
@@ -105,16 +111,21 @@
 Нужен вход. Все игры (`type` = `game`) из лицензий аккаунта, через PICS:
 
 ```json
-{"apps":[{"appid":1245620,"name":"ELDEN RING","type":"game","oslist":"windows","windows":true,"size_bytes":56188103775}]}
+{"apps":[{"appid":413150,"name":"Stardew Valley","type":"game","oslist":"windows,macos,linux","windows":true,"size_bytes":…,
+          "macos":true,"macos_size_bytes":…,"macos_arch":null}]}
 ```
 
 `windows` — есть ли что ставить под Windows (см. выбор депо ниже), `size_bytes` — сумма размеров этих депо из appinfo (примерно столько займёт игра; `null`, если Windows-депо нет).
 
+`macos` (feature `macos`) — есть ли нативная сборка для macOS: в `common/oslist` есть `macos` **и** среди депо, выбранных под macOS, есть депо с `macos` в своём `oslist`, которое входит в лицензии аккаунта (`depotids` пакетов PICS; если пакеты депо не перечисляют — проверка пропускается). Одних общих депо (`oslist` пустой) мало: без своего macOS-депо это не игра. `macos_size_bytes` — размер выбранных под macOS депо. `macos_arch` — `arm64`, если `osarch` macOS-депо или варианта запуска это прямо говорит; обычно appinfo архитектуру не называет — тогда `null` (ядро узнаёт её после установки по заголовку Mach-O).
+
 ### `app_info`
 
 ```json
-{"id":4,"cmd":"app_info","appid":1245620}
+{"id":4,"cmd":"app_info","appid":1245620,"platform":"macos"}
 ```
+
+`platform` (feature `macos`) — `windows` (по умолчанию) или `macos`: под какую платформу выбирать депо (`install`, `skip` «не macOS»).
 
 Без входа хелпер входит анонимно (публичные данные приложения видны и так). Ответ:
 
@@ -126,17 +137,24 @@
      "manifests":{"public":"…"},"dlc_appid":null,"install":true,"skip":null},
     {"depotid":228988,"oslist":"windows","install":false,"skip":"общий редистрибутив", …}
   ],
-  "branches": [{"name":"public","buildid":…,"time_updated":…,"password_required":false,"description":null}]
+  "branches": [{"name":"public","buildid":…,"time_updated":…,"password_required":false,"description":null}],
+  "platform": "windows", "macos": true,
+  "launch": [{"executable":"Game.app","arguments":null,"workingdir":null,"type":"default","description":null,
+              "oslist":"macos","osarch":null,"betakey":null}]
 }
 ```
 
-Выбор депо для установки (`install: true`), как у DepotDownloader: `oslist` пустой или содержит `windows`; без `depotfromapp`/`sharedinstall` (общие редистрибутивы); DLC — только купленные; язык пустой или `english`; без low violence; есть манифест ветки; если есть 64-битные депо, 32-битные пропускаются. Почему депо не ставится — в `skip`.
+`launch` — все варианты запуска из `config/launch`, `macos` — то же, что в `owned_apps`.
+
+Выбор депо для установки (`install: true`), как у DepotDownloader: `oslist` пустой или содержит платформу (`windows` или `macos`); без `depotfromapp`/`sharedinstall` (общие редистрибутивы); DLC — только купленные; язык пустой или `english`; без low violence; есть манифест ветки; если есть 64-битные депо, 32-битные пропускаются. Почему депо не ставится — в `skip`.
 
 ### `download`
 
 ```json
-{"id":5,"cmd":"download","appid":1245620,"dir":"/абсолютный/путь","branch":"public","depots":[1245621]}
+{"id":5,"cmd":"download","appid":1245620,"dir":"/абсолютный/путь","branch":"public","depots":[1245621],"platform":"macos"}
 ```
+
+`platform` (feature `macos`) — какую сборку качать, по умолчанию `windows`. Для `macos` без `depots` нужна настоящая macOS-сборка (как `macos` в `owned_apps`), иначе `no_depots`.
 
 Качает депо приложения в `dir` (создаётся). `branch` — по умолчанию `public`, ветки с паролем не поддерживаются. `depots` необязателен: без него — депо с `install: true`. Без входа хелпер входит анонимно — так качаются бесплатные депо Valve (например, Steamworks SDK Redist, appid 1007); с входом проверяется, что приложение есть в лицензиях (`not_owned`).
 
@@ -145,7 +163,9 @@
 - `{"event":"depot","depotid":…,"manifest":"…","files":123,"total":456}` — по одному на депо, когда скачан его манифест (до первого чанка).
 - `{"event":"progress","downloaded":…,"total":…}` — байты, не чаще 4 раз в секунду; первое — с `downloaded: 0`, последнее — с `downloaded == total`.
 
-Ответ: `{"appid":…,"dir":"…","downloaded":…,"files":…,"unchanged":…,"depots":[{"depotid":…,"manifest":"…"}]}`.
+Ответ: `{"appid":…,"dir":"…","downloaded":…,"files":…,"unchanged":…,"depots":[{"depotid":…,"manifest":"…"}],"platform":"macos","launch":[…]}`. `launch` — варианты запуска под платформу и ветку (`oslist` пустой или с платформой, без чужих `betakey`, тип `default`/`none`/`option1`); ядро сохраняет их в папке игры (`.carafe-native`).
+
+Флаг `executable` из манифеста ставится (`chmod +x`), симлинки создаются после файлов — только относительные и только внутрь `dir` (во фреймворках `.app` их много); остальные пропускаются с записью в лог.
 
 Как качает: манифесты и ключи депо — через сессию, чанки — с CDN Steam (`GetServersForSteamPipe`), по 8 параллельно, с повтором на другом сервере. Файл с тем же размером и SHA-1, что в манифесте, не качается заново (`unchanged`) — так докачивается прерванная загрузка. Пути из манифеста не выходят за `dir` (`bad_manifest`). Отмена — `cancel` или закрытый stdin.
 
@@ -153,7 +173,7 @@
 
 - удаления файлов, которых нет в новом манифесте (обновление игры поверх старой версии оставит лишние файлы);
 - докачки внутри файла: недокачанный файл качается целиком заново;
-- симлинков из манифеста (пропускаются с записью в лог) и флага executable;
+- симлинков наружу из папки игры (пропускаются с записью в лог);
 - общих редистрибутивов (`depotfromapp`, например DirectX/VC++ 228980) и веток с паролем;
 - проверки свободного места до начала.
 

@@ -51,6 +51,21 @@ pub struct Game {
     pub available: bool,
     pub bridge: BridgeState,
     pub cloud: CloudSummary,
+    /// Windows через carafe или нативная macOS-сборка.
+    pub platform: Platform,
+    /// Архитектура нативной сборки: `arm64`, `x86_64` (через Rosetta), `universal`.
+    pub arch: Option<String>,
+}
+
+/// Какая сборка игры стоит или будет стоять.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Platform {
+    /// Windows-сборка через Wine (soju) — как всегда.
+    #[default]
+    Windows,
+    /// Нативная сборка для macOS: без Wine, бутылки и моста.
+    Macos,
 }
 
 /// Обложки из Steam CDN.
@@ -348,6 +363,7 @@ pub struct Download {
     pub speed: Option<u64>,
     pub eta_secs: Option<u64>,
     pub error: Option<String>,
+    pub platform: Platform,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -406,9 +422,12 @@ pub struct OwnedGame {
     pub name: String,
     pub cover: Cover,
     pub installed: bool,
-    /// Есть ли Windows-сборка: без неё ставить нечего.
+    /// Есть ли Windows-сборка.
     pub windows: bool,
     pub size_bytes: Option<u64>,
+    /// Есть ли нативная сборка для macOS (её можно поставить без Wine).
+    pub macos: bool,
+    pub macos_size_bytes: Option<u64>,
 }
 
 /// Что Steam знает об игре на этом аккаунте. Чего нет, то `None`: блок на экране не рисуется.
@@ -506,8 +525,9 @@ pub trait Backend: Send + Sync {
         unsupported()
     }
 
-    /// Поставить игру в очередь загрузок: в `library` или в папку по умолчанию.
-    fn install(&self, _appid: AppId, _library: Option<&Path>) -> Result<()> {
+    /// Поставить игру в очередь загрузок: в `library` или в папку по умолчанию; `platform` —
+    /// какую сборку (уже установленная обновляется той, что стоит).
+    fn install(&self, _appid: AppId, _library: Option<&Path>, _platform: Platform) -> Result<()> {
         unsupported()
     }
 

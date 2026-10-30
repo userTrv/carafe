@@ -14,6 +14,12 @@ S.login = null; // { svg }
 function withOwned(games) {
   if (!games || !S.owned) return games;
   const have = new Set(games.map((g) => g.appid));
+  // У своих игр — какие сборки есть в Steam (нативная macOS) из списка аккаунта.
+  const byId = new Map(S.owned.map((o) => [o.appid, o]));
+  games = games.map((g) => {
+    const o = byId.get(g.appid);
+    return o ? { ...g, windows: o.windows, macos: o.macos, macosSizeBytes: o.macosSizeBytes } : g;
+  });
   const extra = S.owned
     .filter((o) => !have.has(o.appid))
     .map((o) => ({
@@ -23,6 +29,9 @@ function withOwned(games) {
       installed: false,
       windows: o.windows,
       sizeBytes: o.sizeBytes,
+      macos: o.macos,
+      macosSizeBytes: o.macosSizeBytes,
+      platform: "windows",
       library: null,
       available: true,
       bridge: "unknown",

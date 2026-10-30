@@ -21,6 +21,8 @@ namespace Carafe.Steam;
 static class Program
 {
     public const int ProtocolVersion = 1;
+    /// `macos` — поле `platform` в `app_info`/`download` и нативность в `owned_apps`.
+    static readonly string[] Features = ["macos"];
 
     static async Task<int> Main(string[] args)
     {
@@ -40,6 +42,8 @@ static class Program
             ["event"] = "ready",
             ["protocol"] = ProtocolVersion,
             ["version"] = typeof(Program).Assembly.GetName().Version?.ToString(3),
+            // Что умеет этот хелпер сверх протокола 1: ядро не шлёт запросов, которых он не поймёт.
+            ["features"] = new JsonArray(Features.Select(f => (JsonNode)f).ToArray()),
         });
 
         // stdin читаем отдельно от исполнения запросов: отмена должна доходить, пока запрос идёт.

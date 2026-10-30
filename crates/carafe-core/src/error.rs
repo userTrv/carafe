@@ -117,6 +117,21 @@ pub enum Error {
     #[error("нужен вход в steamcmd: carafe steam login USER")]
     NoSteamLogin,
 
+    #[error("не нашёл .app в {}", .0.display())]
+    NativeAppNotFound(PathBuf),
+    #[error("игре нужен запущенный Steam для Mac: открой Steam и запусти игру снова")]
+    NativeNeedsSteam,
+    #[error("это Intel-сборка, а Rosetta не установлена: softwareupdate --install-rosetta")]
+    RosettaMissing,
+    #[error("игра {appid} уже стоит как {}-сборка", .installed.label())]
+    PlatformMismatch { appid: u32, installed: crate::native::Platform },
+    #[error("у игры {0} нет сборки для macOS")]
+    NoMacBuild(u32),
+    #[error("нативная установка — только через вход carafe login (steamcmd не используется)")]
+    NativeNeedsLogin,
+    #[error("хелпер carafe-steam не умеет macOS-сборки — пересобери steam/build.sh")]
+    HelperTooOld,
+
     #[error(transparent)]
     Vdf(#[from] VdfError),
     #[error("{}: {source}", .path.display())]

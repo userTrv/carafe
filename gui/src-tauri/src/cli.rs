@@ -18,8 +18,8 @@ use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use carafe_core::{
-    AutoDownloader, Carafe, Config, GameLocation, InstalledEngine, JobKind, JobState, LoginEvent,
-    Queue,
+    AutoDownloader, Carafe, Config, GameLocation, InstalledEngine, JobKind, JobState, LaunchEvent,
+    LoginEvent, Queue, native,
 };
 
 use crate::backend::*;
@@ -101,6 +101,76 @@ impl CliBackend {
                 }
             }
         }));
+    }
+
+    /// Нативная macOS-игра: без моста и облака carafe (облако у неё — в самом Steam).
+    fn native_game(&self, loc: &GameLocation) -> Game {
+        let target = native::find_target(&loc.dir);
+        let arch = target
+            .as_ref()
+            .and_then(|t| native::macho_arch(&t.program))
+            .map(|a| a.as_str().to_string());
+        let name = loc
+            .name
+            .clone()
+            .or_else(|| self.core.cached_owned_app(loc.appid).map(|a| a.name))
+            .or_else(|| {
+                let t = target.as_ref()?;
+                let p = t.bundle.as_deref().unwrap_or(&t.program);
+                p.file_stem()?.to_str().map(String::from)
+            })
+            .unwrap_or_else(|| format!("App {}", loc.appid));
+        Game {
+            appid: loc.appid,
+            name,
+            cover: Cover::for_app(loc.appid),
+            installed: target.is_some(),
+            size_bytes: loc.size,
+            library: Some(self.library_path(loc)),
+            available: true,
+            bridge: BridgeState::NotNeeded,
+            cloud: CloudSummary {
+                state: CloudState::Unavailable,
+                last_sync: None,
+            },
+            platform: Platform::Macos,
+            arch,
+        }
+    }
+
+    /// Нативная игра — прямо через ядро: облака и моста нет, есть только этап «игра».
+    fn launch_native(&self, appid: AppId, events: Events) -> Result<i32> {
+        for s in [Stage::CloudPull, Stage::Bridge] {
+            stage_ev(events, s, StageStatus::Skipped);
+        }
+        stage_ev(events, Stage::Game, StageStatus::Active);
+        let r = self.core.run_game(appid, &[], &mut |e| match e {
+            LaunchEvent::Prepared { exe, .. } => events(TaskEvent::Log {
+                line: format!("==> запускаю нативно {}", exe.display()),
+            }),
+            LaunchEvent::GameExited { code } if code != 0 => events(TaskEvent::Log {
+                line: format!("игра вышла с кодом {code}"),
+            }),
+            _ => {}
+        });
+        match r {
+            Ok(code) => {
+                stage_ev(events, Stage::Game, StageStatus::Done);
+                stage_ev(events, Stage::CloudPush, StageStatus::Skipped);
+                Ok(code)
+            }
+            Err(e) => {
+                let e = core_err(e);
+                stage_ev(
+                    events,
+                    Stage::Game,
+                    StageStatus::Failed {
+                        message: e.0.clone(),
+                    },
+                );
+                Err(e)
+            }
+        }
     }
 
     fn library_path(&self, loc: &GameLocation) -> String {
@@ -373,10 +443,16 @@ impl Backend for CliBackend {
                         state: CloudState::Unknown,
                         last_sync: None,
                     },
+                    platform: Platform::Windows,
+                    arch: None,
                 });
                 continue;
             }
             let dir = &loc.dir;
+            if native::platform_of(dir) == carafe_core::Platform::Macos {
+                games.push(self.native_game(&loc));
+                continue;
+            }
             let exe = find_game_exe(dir);
             let name = loc
                 .name
@@ -408,6 +484,8 @@ impl Backend for CliBackend {
                 available: true,
                 bridge,
                 cloud: CloudSummary { state, last_sync },
+                platform: Platform::Windows,
+                arch: None,
             });
         }
         games.sort_by_key(|g| g.name.to_lowercase());
@@ -445,6 +523,9 @@ impl Backend for CliBackend {
     }
 
     fn launch(&self, appid: AppId, profile: &Profile, events: Events) -> Result<i32> {
+        if self.core.game_platform(appid).ok().flatten() == Some(carafe_core::Platform::Macos) {
+            return self.launch_native(appid, events);
+        }
         let id = appid.to_string();
         let mut tracker = LaunchTracker::new(events);
         let (code, lines) = self.run(&["game", "run", &id], profile, None, |line| {
@@ -540,9 +621,13 @@ impl Backend for CliBackend {
         self.core.library_set_default(path).map_err(core_err)
     }
 
-    fn install(&self, appid: AppId, library: Option<&Path>) -> Result<()> {
+    fn install(&self, appid: AppId, library: Option<&Path>, platform: Platform) -> Result<()> {
+        let platform = match platform {
+            Platform::Windows => carafe_core::Platform::Windows,
+            Platform::Macos => carafe_core::Platform::Macos,
+        };
         self.core
-            .enqueue_game(appid, library, false)
+            .enqueue_game_as(appid, library, false, Some(platform))
             .map_err(core_err)?;
         self.ensure_worker();
         Ok(())
@@ -674,6 +759,8 @@ impl Backend for CliBackend {
                 installed: g.installed,
                 windows: g.app.windows,
                 size_bytes: g.app.size_bytes,
+                macos: g.app.macos,
+                macos_size_bytes: g.app.macos_size_bytes,
             })
             .collect())
     }
@@ -722,6 +809,10 @@ impl Backend for CliBackend {
                 speed: j.speed,
                 eta_secs: j.eta,
                 error: j.error,
+                platform: match j.platform {
+                    carafe_core::Platform::Windows => Platform::Windows,
+                    carafe_core::Platform::Macos => Platform::Macos,
+                },
             })
             .collect())
     }

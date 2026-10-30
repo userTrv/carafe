@@ -100,7 +100,7 @@ sealed partial class Session : IAsyncDisposable
         "status" => Task.FromResult(Status()),
         "licenses" => Licenses(ct),
         "owned_apps" => OwnedApps(ct),
-        "app_info" => AppInfo(req.UInt("appid"), ct),
+        "app_info" => AppInfo(req.UInt("appid"), Os.From(req), ct),
         "download" => Download(req, ct),
         "logout" => Logout(req, ct),
         "playtime" => Playtime(ct),
@@ -323,23 +323,31 @@ sealed partial class Session : IAsyncDisposable
     }
 
     /// appid всех приложений из лицензий аккаунта (по пакетам из PICS).
-    async Task<HashSet<uint>> OwnedAppIds(CancellationToken ct)
+    async Task<HashSet<uint>> OwnedAppIds(CancellationToken ct) => (await OwnedContent(ct)).Apps;
+
+    /// Приложения и депо из лицензий аккаунта (`appids` и `depotids` пакетов PICS).
+    async Task<(HashSet<uint> Apps, HashSet<uint> Depots)> OwnedContent(CancellationToken ct)
     {
         // Анонимной сессии Steam список лицензий не присылает.
-        if (account == "") return [];
+        if (account == "") return ([], []);
         var list = await UserLicenses(ct);
         var packages = list.Where(l => l.PackageID != 0)
             .Select(l => new SteamApps.PICSRequest(l.PackageID, l.AccessToken))
             .ToList();
         var ids = new HashSet<uint>();
+        var depots = new HashSet<uint>();
         foreach (var batch in packages.Chunk(PicsBatch))
         {
             var info = await ProductInfo([], batch, ct);
             foreach (var pkg in info.SelectMany(r => r.Packages.Values))
+            {
                 foreach (var a in pkg.KeyValues["appids"].Children)
                     if (uint.TryParse(a.Value, out var id)) ids.Add(id);
+                foreach (var d in pkg.KeyValues["depotids"].Children)
+                    if (uint.TryParse(d.Value, out var id)) depots.Add(id);
+            }
         }
-        return ids;
+        return (ids, depots);
     }
 
     async Task<List<SteamApps.PICSProductInfoCallback>> ProductInfo(
@@ -369,14 +377,18 @@ sealed partial class Session : IAsyncDisposable
     async Task<JsonObject> OwnedApps(CancellationToken ct)
     {
         RequireUser();
-        var ids = await OwnedAppIds(ct);
+        var (ids, depots) = await OwnedContent(ct);
         var infos = await AppInfos(ids, ct);
         var games = new JsonArray();
+        var macs = 0;
         foreach (var (id, kv) in infos.OrderBy(p => p.Key))
         {
             var type = kv["common"]["type"].AsString()?.ToLowerInvariant();
             if (type != "game") continue;
             var app = AppDepots.From(id, kv, ids);
+            var mac = AppDepots.From(id, kv, ids, platform: Os.MacOS);
+            var hasMac = AppDepots.HasMac(kv, mac, depots);
+            if (hasMac) macs++;
             games.Add(new JsonObject
             {
                 ["appid"] = id,
@@ -385,26 +397,38 @@ sealed partial class Session : IAsyncDisposable
                 ["oslist"] = kv["common"]["oslist"].AsString() ?? "",
                 ["windows"] = app.Install.Count > 0,
                 ["size_bytes"] = app.Install.Count > 0 ? app.Install.Sum(d => (long)d.Size) : null,
+                ["macos"] = hasMac,
+                ["macos_size_bytes"] = hasMac ? mac.Install.Sum(d => (long)d.Size) : null,
+                ["macos_arch"] = hasMac ? MacArch(mac) : null,
             });
         }
-        Log.Write($"приложений в лицензиях: {ids.Count}, игр: {games.Count}");
+        Log.Write($"приложений в лицензиях: {ids.Count}, игр: {games.Count}, из них с macOS-сборкой: {macs}");
         return new JsonObject { ["apps"] = games };
     }
 
-    async Task<AppDepots> LoadAppDepots(uint appid, CancellationToken ct)
+    /// Архитектура macOS-сборки, если appinfo её называет (`osarch` депо и вариантов запуска):
+    /// `arm64` — для Apple Silicon. Чаще всего не называет — тогда `null`.
+    static string? MacArch(AppDepots mac)
+    {
+        var arches = mac.Install.Where(d => Os.In(d.OsList, Os.MacOS)).Select(d => d.Arch)
+            .Concat(mac.LaunchFor("public").Select(l => l.OsArch))
+            .Where(a => !string.IsNullOrEmpty(a))
+            .ToHashSet();
+        return arches.Contains("arm64") ? "arm64" : null;
+    }
+
+    async Task<JsonObject> AppInfo(uint appid, string platform, CancellationToken ct)
     {
         // Публичные данные приложения видны и анонимно.
         if (account == null) await LogOnAnonymous(ct);
-        var owned = await OwnedAppIds(ct);
+        var (owned, depots) = await OwnedContent(ct);
         var infos = await AppInfos([appid], ct);
         if (!infos.TryGetValue(appid, out var kv) || kv.Children.Count == 0)
             throw new HelperException("not_found", $"нет appinfo для {appid}");
-        return AppDepots.From(appid, kv, owned);
-    }
-
-    async Task<JsonObject> AppInfo(uint appid, CancellationToken ct)
-    {
-        var app = await LoadAppDepots(appid, ct);
-        return app.ToJson();
+        var app = AppDepots.From(appid, kv, owned, platform: platform);
+        var json = app.ToJson();
+        var mac = platform == Os.MacOS ? app : AppDepots.From(appid, kv, owned, platform: Os.MacOS);
+        json["macos"] = AppDepots.HasMac(kv, mac, depots);
+        return json;
     }
 }
