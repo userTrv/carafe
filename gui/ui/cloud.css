@@ -1,0 +1,139 @@
+/* Окно конфликта сейвов (cloud.js) — по gui/DESIGN.md. */
+
+.cloud-dlg {
+  width: min(640px, calc(100vw - 48px));
+  padding: 32px;
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  background: var(--surface);
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.cloud-dlg:not([open]) {
+  display: none;
+}
+
+.cloud-dlg::backdrop {
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(20px);
+}
+
+.cloud-dlg[open] {
+  animation: cd-in 300ms var(--ease);
+}
+
+@keyframes cd-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+.cd-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cd-head h2 {
+  font: 600 24px/32px var(--sans);
+  text-wrap: balance;
+}
+
+.cd-sides {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+/* Скругление внутри: 24 (окно) − отступ; 16. */
+.cd-side {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 24px;
+  border-radius: 16px;
+  background: var(--surface-2);
+  border: 1px solid transparent;
+}
+
+.cd-side.newer {
+  border-color: var(--line);
+}
+
+.cd-where {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font: 600 14px/20px var(--sans);
+  color: var(--text-2);
+}
+
+.cd-where svg {
+  width: 18px;
+  height: 18px;
+}
+
+.cd-where .tag {
+  margin-left: auto;
+  background: var(--surface-3);
+  color: var(--accent);
+}
+
+.cd-when {
+  font: 600 20px/28px var(--mono);
+}
+
+.cd-side .btn {
+  margin-top: 16px;
+}
+
+.cd-files {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.cd-files li {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 16px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.cd-files .mono {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.cd-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cloud-dlg[open] {
+    animation: cd-fade 300ms var(--ease);
+  }
+  @keyframes cd-fade {
+    from {
+      opacity: 0;
+    }
+  }
+}
+
+@media (max-width: 560px) {
+  .cd-sides {
+    grid-template-columns: 1fr;
+  }
+}

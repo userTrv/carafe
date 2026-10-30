@@ -37,6 +37,8 @@ struct MockGame {
     cloud: CloudState,
     last_sync_ago: Option<u64>,
     files: &'static [(&'static str, CloudAction, bool)],
+    /// Конфликт решён в окне: файлы с флагом конфликта — синхронизированы.
+    resolved: bool,
 }
 
 struct MockLibrary {
@@ -321,6 +323,7 @@ impl State {
                 cloud: CloudState::Unknown,
                 last_sync_ago: None,
                 files: &[],
+                resolved: false,
             });
         }
     }
@@ -390,6 +393,7 @@ impl MockBackend {
                     ("stats.json", Synced, false),
                     ("controller_config.json", Synced, false),
                 ],
+                resolved: false,
             },
             MockGame {
                 appid: 1145350,
@@ -406,6 +410,7 @@ impl MockBackend {
                     ("Profile1.sav", Download, false),
                     ("Profile1_Temp.sav", Download, false),
                 ],
+                resolved: false,
             },
             MockGame {
                 appid: 2379780,
@@ -423,6 +428,7 @@ impl MockBackend {
                     ("1/save.jkr", Upload, false),
                     ("settings.jkr", Synced, false),
                 ],
+                resolved: false,
             },
             MockGame {
                 appid: 1794680,
@@ -436,6 +442,7 @@ impl MockBackend {
                 cloud: CloudState::Conflict,
                 last_sync_ago: Some(9 * DAY),
                 files: &[("SaveData", Upload, true), ("Settings", Synced, false)],
+                resolved: false,
             },
             MockGame {
                 appid: 413150,
@@ -450,6 +457,7 @@ impl MockBackend {
                 cloud: CloudState::Unavailable,
                 last_sync_ago: None,
                 files: &[],
+                resolved: false,
             },
             MockGame {
                 appid: 1245620,
@@ -463,6 +471,7 @@ impl MockBackend {
                 cloud: CloudState::Unknown,
                 last_sync_ago: None,
                 files: &[],
+                resolved: false,
             },
             MockGame {
                 appid: 1086940,
@@ -476,6 +485,7 @@ impl MockBackend {
                 cloud: CloudState::Unknown,
                 last_sync_ago: None,
                 files: &[],
+                resolved: false,
             },
             MockGame {
                 appid: 1091500,
@@ -489,6 +499,7 @@ impl MockBackend {
                 cloud: CloudState::Unknown,
                 last_sync_ago: None,
                 files: &[],
+                resolved: false,
             },
             MockGame {
                 appid: 367520,
@@ -502,6 +513,7 @@ impl MockBackend {
                 cloud: CloudState::Synced,
                 last_sync_ago: Some(5 * DAY),
                 files: &[("user1.dat", Synced, false), ("user2.dat", Synced, false)],
+                resolved: false,
             },
         ];
         let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/me".into());
@@ -666,6 +678,56 @@ fn stage(events: Events, stage: Stage, status: StageStatus) {
     events(TaskEvent::Stage { stage, status });
 }
 
+/// Файл демо-облака; у конфликта — две версии: на диске свежее, в облаке старше и меньше.
+fn mock_file(
+    (name, action, conflict): (&'static str, CloudAction, bool),
+    resolved: bool,
+    now: u64,
+) -> CloudFile {
+    if !conflict {
+        return CloudFile::new(name, action, false);
+    }
+    if resolved {
+        return CloudFile::new(name, CloudAction::Synced, false);
+    }
+    let iso = |ago: u64| {
+        // Демо без часовых поясов: UTC.
+        let t = now - ago;
+        let (d, s) = ((t / DAY) as i64, t % DAY);
+        let (y, m, dd) = civil(d);
+        format!(
+            "{y:04}-{m:02}-{dd:02}T{:02}:{:02}:{:02}+00:00",
+            s / HOUR,
+            s % HOUR / 60,
+            s % 60
+        )
+    };
+    CloudFile {
+        local: Some(CloudSide {
+            modified: iso(2 * HOUR + 17 * 60),
+            size: 48_213,
+        }),
+        cloud: Some(CloudSide {
+            modified: iso(DAY + 5 * HOUR),
+            size: 46_870,
+        }),
+        ..CloudFile::new(name, CloudAction::Conflict, true)
+    }
+}
+
+/// Дни от 1970-01-01 → (год, месяц, день): алгоритм Хиннанта.
+fn civil(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (yoe + era * 400 + i64::from(m <= 2), m, d)
+}
+
 fn log(events: Events, line: impl Into<String>) {
     events(TaskEvent::Log { line: line.into() });
 }
@@ -784,15 +846,7 @@ impl Backend for MockBackend {
         }
         let t = now();
         self.with_game(appid, |g| CloudStatus {
-            files: g
-                .files
-                .iter()
-                .map(|&(name, action, conflict)| CloudFile {
-                    name: name.into(),
-                    action,
-                    conflict,
-                })
-                .collect(),
+            files: g.files.iter().map(|&f| mock_file(f, g.resolved, t)).collect(),
             last_sync: g.last_sync_ago.map(|a| t - a),
             note: g
                 .files
@@ -801,7 +855,13 @@ impl Backend for MockBackend {
         })
     }
 
-    fn launch(&self, appid: AppId, profile: &Profile, events: Events) -> Result<i32> {
+    fn launch(
+        &self,
+        appid: AppId,
+        profile: &Profile,
+        opts: &LaunchOptions,
+        events: Events,
+    ) -> Result<Launched> {
         {
             let st = self.lock();
             let g = st
@@ -814,28 +874,63 @@ impl Backend for MockBackend {
                 )));
             }
         }
-        let (name, files, bridge, platform) =
-            self.with_game(appid, |g| (g.name, g.files, g.bridge, g.platform))?;
+        let (name, files, bridge, platform, resolved) =
+            self.with_game(appid, |g| (g.name, g.files, g.bridge, g.platform, g.resolved))?;
         if platform == Platform::Macos {
-            return self.launch_native(name, events);
+            return self.launch_native(name, events).map(|code| Launched {
+                code,
+                ..Launched::default()
+            });
         }
         if !self.state.lock().expect("mock state").steam {
             return Err(BackendError::new("Steam для Mac не запущен"));
         }
 
         let cloud = profile.cloud && !files.is_empty();
-        if cloud {
+        if cloud && opts.pull {
             stage(events, Stage::CloudPull, StageStatus::Active);
             log(events, "==> Steam Cloud: pull");
             wait(900);
+            let conflicts: Vec<CloudFile> = files
+                .iter()
+                .filter(|f| f.2 && !resolved)
+                .map(|&f| mock_file(f, false, now()))
+                .collect();
+            if !conflicts.is_empty() && opts.prefer.is_none() {
+                for f in &conflicts {
+                    log(events, format!("  ! {} (конфликт)", f.name));
+                }
+                stage(
+                    events,
+                    Stage::CloudPull,
+                    StageStatus::Failed {
+                        message: "конфликт сейвов".into(),
+                    },
+                );
+                events(TaskEvent::CloudConflict { files: conflicts });
+                return Ok(Launched {
+                    code: 3,
+                    conflict: true,
+                    push: false,
+                });
+            }
+            if let Some(p) = opts.prefer.filter(|_| !conflicts.is_empty()) {
+                for f in &conflicts {
+                    let line = match p {
+                        Prefer::Local => format!("  ↑ {} (конфликт: оставлены локальные, облачные — в backups)", f.name),
+                        Prefer::Cloud => format!("  ↓ {} (конфликт: взяты из облака, локальные — в backups)", f.name),
+                    };
+                    log(events, line);
+                }
+                self.with_game(appid, |g| {
+                    g.resolved = true;
+                    g.cloud = CloudState::Pending;
+                })?;
+            }
             for &(f, action, conflict) in files {
                 if action == CloudAction::Download {
                     events(TaskEvent::CloudFile {
-                        file: CloudFile {
-                            name: f.into(),
-                            action,
-                            conflict,
-                        },
+                        file: CloudFile::new(f, action, conflict),
                     });
                     log(events, format!("  ↓ {f}"));
                     wait(250);
@@ -843,6 +938,9 @@ impl Backend for MockBackend {
             }
             stage(events, Stage::CloudPull, StageStatus::Done);
         } else {
+            if cloud {
+                log(events, "==> Steam Cloud: pull пропущен — ещё идёт выгрузка прошлого запуска");
+            }
             stage(events, Stage::CloudPull, StageStatus::Skipped);
         }
 
@@ -867,31 +965,47 @@ impl Backend for MockBackend {
         stage(events, Stage::Game, StageStatus::Done);
 
         if cloud {
-            stage(events, Stage::CloudPush, StageStatus::Active);
-            log(events, "==> Steam Cloud: push");
-            wait(800);
-            for &(f, action, conflict) in files {
-                if action == CloudAction::Upload {
-                    events(TaskEvent::CloudFile {
-                        file: CloudFile {
-                            name: f.into(),
-                            action,
-                            conflict,
-                        },
-                    });
-                    log(events, format!("  ↑ {f}"));
-                    wait(250);
-                }
-            }
-            stage(events, Stage::CloudPush, StageStatus::Done);
-            self.with_game(appid, |g| {
-                g.cloud = CloudState::Synced;
-                g.last_sync_ago = Some(0);
-            })?;
-        } else {
-            stage(events, Stage::CloudPush, StageStatus::Skipped);
+            log(events, "==> Steam Cloud: push отложен");
         }
-        Ok(0)
+        Ok(Launched {
+            code: 0,
+            conflict: false,
+            push: cloud,
+        })
+    }
+
+    /// Выгрузка в фоне: `CARAFE_MOCK_PUSH_SECS` секунд (по умолчанию 12) — успеть запустить игру
+    /// ещё раз, пока она идёт.
+    fn cloud_push(&self, appid: AppId, _profile: &Profile, events: Events) -> Result<()> {
+        let secs: u64 = std::env::var("CARAFE_MOCK_PUSH_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(12);
+        let files = self.with_game(appid, |g| g.files)?;
+        stage(events, Stage::CloudPush, StageStatus::Active);
+        log(events, "==> Steam Cloud: push");
+        let ups: Vec<_> = files
+            .iter()
+            .filter(|f| f.1 == CloudAction::Upload || f.2)
+            .collect();
+        let step = secs * 1000 / (ups.len() as u64 + 1);
+        wait(step);
+        for (i, &&(f, _, _)) in ups.iter().enumerate() {
+            events(TaskEvent::Progress {
+                stage: Stage::CloudPush,
+                fraction: (i + 1) as f32 / (ups.len() + 1) as f32,
+            });
+            let file = CloudFile::new(f, CloudAction::Upload, false);
+            events(TaskEvent::CloudFile { file });
+            log(events, format!("  ↑ {f}"));
+            wait(step);
+        }
+        stage(events, Stage::CloudPush, StageStatus::Done);
+        self.with_game(appid, |g| {
+            g.cloud = CloudState::Synced;
+            g.last_sync_ago = Some(0);
+        })?;
+        Ok(())
     }
 
     fn build_bridge(&self, appid: AppId, _profile: &Profile, events: Events) -> Result<()> {

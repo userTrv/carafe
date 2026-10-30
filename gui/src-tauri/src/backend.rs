@@ -157,6 +157,78 @@ pub struct CloudFile {
     pub name: String,
     pub action: CloudAction,
     pub conflict: bool,
+    /// Нерешённый конфликт: версия на диске и в облаке.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local: Option<CloudSide>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloud: Option<CloudSide>,
+}
+
+impl CloudFile {
+    pub fn new(name: impl Into<String>, action: CloudAction, conflict: bool) -> Self {
+        Self {
+            name: name.into(),
+            action,
+            conflict,
+            local: None,
+            cloud: None,
+        }
+    }
+}
+
+/// Одна сторона конфликта.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudSide {
+    /// ISO 8601 с поясом: `2026-10-30T13:42:59+03:00`.
+    pub modified: String,
+    pub size: u64,
+}
+
+/// Чьи сейвы оставить при конфликте; вторые уходят в резервную копию.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Prefer {
+    Local,
+    Cloud,
+}
+
+impl Prefer {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Prefer::Local => "local",
+            Prefer::Cloud => "cloud",
+        }
+    }
+}
+
+/// Как запускать игру.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LaunchOptions {
+    /// Решение конфликта сейвов, выбранное в окне.
+    pub prefer: Option<Prefer>,
+    /// Скачать сейвы до игры. Нет — пока идёт выгрузка прошлого запуска: локальные новее.
+    pub pull: bool,
+}
+
+impl Default for LaunchOptions {
+    fn default() -> Self {
+        Self {
+            prefer: None,
+            pull: true,
+        }
+    }
+}
+
+/// Итог запуска. Выгрузку после игры GUI делает сам, в фоне (`Backend::cloud_push`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Launched {
+    /// Код выхода игры.
+    pub code: i32,
+    /// Конфликт сейвов: игра не запускалась, нужен выбор (`LaunchOptions::prefer`).
+    pub conflict: bool,
+    /// После игры нужно выгрузить сейвы.
+    pub push: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -165,6 +237,8 @@ pub enum CloudAction {
     Synced,
     Download,
     Upload,
+    /// Менялись и диск, и облако.
+    Conflict,
 }
 
 /// Готовность окружения: список проверок для экрана первого запуска.
@@ -296,6 +370,10 @@ pub enum TaskEvent {
     },
     CloudFile {
         file: CloudFile,
+    },
+    /// Сейвы разошлись: менялись и диск, и облако. Ничего не перенесено, нужен выбор.
+    CloudConflict {
+        files: Vec<CloudFile>,
     },
     /// Вход в Steam: нарисовать QR из `url`. В окно уходит уже SVG (`main.rs`), не сам URL.
     Qr {
@@ -484,8 +562,18 @@ pub trait Backend: Send + Sync {
 
     fn cloud_status(&self, appid: AppId, profile: &Profile) -> Result<CloudStatus>;
 
-    /// Облако вниз → мост → игра → облако вверх. Возвращает код выхода игры.
-    fn launch(&self, appid: AppId, profile: &Profile, events: Events) -> Result<i32>;
+    /// Облако вниз → мост → игра. Выгрузку после игры (`Launched::push`) GUI запускает сам,
+    /// в фоне, через `cloud_push`: окно и повторный запуск её не ждут.
+    fn launch(
+        &self,
+        appid: AppId,
+        profile: &Profile,
+        opts: &LaunchOptions,
+        events: Events,
+    ) -> Result<Launched>;
+
+    /// Выгрузить сейвы в Steam Cloud (этап `CloudPush`). Конфликт — событие `CloudConflict`.
+    fn cloud_push(&self, appid: AppId, profile: &Profile, events: Events) -> Result<()>;
 
     fn build_bridge(&self, appid: AppId, profile: &Profile, events: Events) -> Result<()>;
 

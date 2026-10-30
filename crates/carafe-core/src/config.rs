@@ -22,6 +22,13 @@ pub struct Config {
     pub bridge: bool,
     /// `CARAFE_CLOUD`.
     pub cloud: bool,
+    /// `CARAFE_CLOUD_PULL=0` — `game run` не скачивает сейвы до игры (GUI так запускает игру, пока
+    /// ещё выгружает сейвы прошлого запуска: локальные и так новее).
+    pub cloud_pull: bool,
+    /// `CARAFE_CLOUD_PUSH=0` — `game run` не выгружает после игры: это делает вызывающий.
+    pub cloud_push: bool,
+    /// `CARAFE_CLOUD_PREFER=local|cloud` — как решить конфликт сейвов.
+    pub cloud_prefer: Option<crate::cloud::Prefer>,
     /// `CARAFE_EXE` — exe игры относительно её папки, если автоопределение ошиблось.
     pub exe: Option<String>,
     /// `CARAFE_HUD`.
@@ -52,6 +59,15 @@ impl Config {
             soju: var("CARAFE_SOJU").map(PathBuf::from),
             bridge: !is("CARAFE_BRIDGE", "0"),
             cloud: var("CARAFE_CLOUD").is_none() || is("CARAFE_CLOUD", "1"),
+            cloud_pull: var("CARAFE_CLOUD_PULL").is_none() || is("CARAFE_CLOUD_PULL", "1"),
+            cloud_push: var("CARAFE_CLOUD_PUSH").is_none() || is("CARAFE_CLOUD_PUSH", "1"),
+            cloud_prefer: match var("CARAFE_CLOUD_PREFER") {
+                None => None,
+                Some(v) => Some(
+                    crate::cloud::Prefer::parse(&v.to_string_lossy())
+                        .ok_or(Error::Usage("CARAFE_CLOUD_PREFER — local или cloud"))?,
+                ),
+            },
             exe: var("CARAFE_EXE").map(|v| v.to_string_lossy().into_owned()),
             hud: is("CARAFE_HUD", "1"),
             steam_dir: support.join("Steam"),
@@ -105,6 +121,11 @@ impl Config {
 
     pub fn bridge_log(&self, appid: u32) -> PathBuf {
         self.home.join(format!("bridge-{appid}.log"))
+    }
+
+    /// Журнал облака: каждый запрос к Steam со временем, Steam ID замаскированы.
+    pub fn cloud_log(&self, appid: u32) -> PathBuf {
+        self.home.join(format!("cloud-{appid}.log"))
     }
 
     /// Каталог soju: `CARAFE_SOJU` или `soju/` рядом с carafe — первый предок бинарника,
@@ -162,6 +183,16 @@ mod tests {
         let c = cfg(&[("HOME", "/h"), ("CARAFE_CLOUD", ""), ("CARAFE_BOTTLE", ""), ("CARAFE_BRIDGE", "0")]);
         assert!(c.cloud && !c.bridge);
         assert_eq!(c.bottle, "default");
+        assert!(c.cloud_pull && c.cloud_push && c.cloud_prefer.is_none());
+        let c = cfg(&[("HOME", "/h"), ("CARAFE_CLOUD_PULL", "0"), ("CARAFE_CLOUD_PREFER", "cloud")]);
+        assert!(!c.cloud_pull && c.cloud_push);
+        assert_eq!(c.cloud_prefer, Some(crate::cloud::Prefer::Cloud));
+        let bad = Config::from_vars(|k| match k {
+            "HOME" => Some("/h".into()),
+            "CARAFE_CLOUD_PREFER" => Some("newest".into()),
+            _ => None,
+        });
+        assert!(bad.is_err());
     }
 
     #[test]

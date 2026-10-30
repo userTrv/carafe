@@ -68,6 +68,9 @@ pub enum Error {
     BridgeNotBuilt(u32),
     #[error("в префиксе нет пользователя")]
     NoPrefixUser,
+    /// soju-steamd вышел с кодом 3: сейвы менялись и на диске, и в облаке, ничего не перенесено.
+    #[error("конфликт сейвов: менялись и диск, и облако — выбери --prefer local или --prefer cloud")]
+    CloudConflict(Vec<crate::cloud::CloudEntry>),
 
     #[error("нет хелпера carafe-steam: собери steam/build.sh (или задай CARAFE_STEAM_HELPER)")]
     SteamHelperMissing,
@@ -156,6 +159,7 @@ impl Error {
     pub fn exit_code(&self) -> i32 {
         match self {
             Error::Failed { status, .. } => crate::process::exit_code(*status).max(1),
+            Error::CloudConflict(_) => crate::cloud::CONFLICT_EXIT,
             _ => 1,
         }
     }

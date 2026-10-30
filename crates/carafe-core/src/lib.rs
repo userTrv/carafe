@@ -36,7 +36,7 @@ pub use account::{AutoDownloader, SteamKitDownloader};
 pub use account::{GameStats, Keychain, MemoryStore, OwnedGame, TokenStore};
 pub use appinfo::{AppInfo, CloudRule};
 pub use bridge::{BridgeState, BridgeTarget};
-pub use cloud::{CloudAction, CloudEntry, CloudMode, CloudReport, CloudSummary};
+pub use cloud::{CONFLICT_EXIT, CloudAction, CloudEntry, CloudMode, CloudReport, CloudSide, CloudSummary, Prefer};
 pub use config::{Config, parse_appid};
 pub use download::{
     DownloadEvent, DownloadRequest, DownloadStage, Downloader, MockDownloader, SteamCmdDownloader, StopFlag,

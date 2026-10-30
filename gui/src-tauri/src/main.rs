@@ -16,7 +16,9 @@ use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 use tauri_plugin_dialog::DialogExt;
 
-use backend::{AppId, Backend, CheckId, DownloadAction, EngineKind, Platform, Profile, TaskEvent};
+use backend::{
+    AppId, Backend, CheckId, DownloadAction, EngineKind, LaunchOptions, Platform, Prefer, Profile, TaskEvent,
+};
 
 /// Настройки GUI: профиль запуска и пути к checkout carafe и soju для `CliBackend`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -204,10 +206,57 @@ fn spawn_task(
     Ok(())
 }
 
+/// Запуск — задача `launch:<appid>`, она кончается с выходом из игры. Сейвы после игры уходят в
+/// облако отдельной задачей `push:<appid>`, в фоне. Если она ещё идёт, игра запускается сразу,
+/// без скачивания: локальные сейвы и так самые свежие, а pull ничего не перезапишет.
+/// `prefer` — выбор в окне конфликта.
 #[tauri::command]
-fn launch(handle: AppHandle, app: State<'_, App>, appid: AppId) -> Result<(), String> {
+fn launch(
+    handle: AppHandle,
+    app: State<'_, App>,
+    appid: AppId,
+    prefer: Option<Prefer>,
+) -> Result<(), String> {
+    let push = push_task(appid);
+    let opts = LaunchOptions {
+        prefer,
+        pull: !app.busy.lock().expect("busy").contains(&push),
+    };
+    let h = handle.clone();
     spawn_task(handle, &app, format!("launch:{appid}"), move |b, p, ev| {
-        b.launch(appid, p, ev)
+        let r = b.launch(appid, p, &opts, ev)?;
+        if r.push {
+            start_push(h, appid);
+        }
+        Ok(r.code)
+    })
+}
+
+fn push_task(appid: AppId) -> String {
+    format!("push:{appid}")
+}
+
+/// Выгрузка в фоне. Прошлая выгрузка этой игры ещё идёт (короткая сессия) — ждём её: облако
+/// всё равно обслуживает их по очереди (soju-steamd держит блокировку на файле состояния).
+fn start_push(handle: AppHandle, appid: AppId) {
+    std::thread::spawn(move || {
+        let task = push_task(appid);
+        loop {
+            let app = handle.state::<App>();
+            match spawn_task(handle.clone(), &app, task.clone(), move |b, p, ev| {
+                b.cloud_push(appid, p, ev).map(|_| 0)
+            }) {
+                Ok(()) => return,
+                Err(_) => std::thread::sleep(std::time::Duration::from_secs(1)),
+            }
+        }
+    });
+}
+
+#[tauri::command]
+fn cloud_push(handle: AppHandle, app: State<'_, App>, appid: AppId) -> Result<(), String> {
+    spawn_task(handle, &app, push_task(appid), move |b, p, ev| {
+        b.cloud_push(appid, p, ev).map(|_| 0)
     })
 }
 
@@ -476,6 +525,7 @@ fn main() {
             get_settings,
             save_settings,
             launch,
+            cloud_push,
             build_bridge,
             fix,
             engine_install,
