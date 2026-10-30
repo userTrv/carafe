@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 
 use carafe_core::download::steamcmd_accounts;
 use carafe_core::{
-    ActiveSource, AutoDownloader, BridgeState, BridgeTarget, Carafe, CloudMode, Downloader, EngineKind, Error, Prefer,
-    JobState, MoveKind, Platform, Queue, QueueEvent, SteamCmdDownloader, human_bytes, parse_appid,
+    ActiveSource, AutoDownloader, BridgeState, BridgeTarget, Carafe, CloudMode, Downloader, EngineKind, Error,
+    JobState, MoveKind, Platform, Prefer, Queue, QueueEvent, SteamCmdDownloader, human_bytes, parse_appid,
 };
 
 const USAGE: &str = "\

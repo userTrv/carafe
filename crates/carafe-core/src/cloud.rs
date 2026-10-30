@@ -86,7 +86,8 @@ pub enum CloudAction {
 }
 
 impl CloudAction {
-    const ALL: [CloudAction; 4] = [CloudAction::Synced, CloudAction::Download, CloudAction::Upload, CloudAction::Conflict];
+    const ALL: [CloudAction; 4] =
+        [CloudAction::Synced, CloudAction::Download, CloudAction::Upload, CloudAction::Conflict];
 
     pub fn symbol(self) -> &'static str {
         match self {
