@@ -250,7 +250,7 @@ dependencies = [
 
 [[package]]
 name = "carafe-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "security-framework",
  "serde",
@@ -261,7 +261,7 @@ dependencies = [
 
 [[package]]
 name = "carafe-gui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "carafe-core",
  "qrcode",
