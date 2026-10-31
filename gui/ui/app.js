@@ -160,14 +160,46 @@ async function loadCloud(appid) {
   }
 }
 
-// Время в игре и достижения — из Steam через хелпер; бэкенд держит кэш. Без входа — ничего.
+/* Время в игре и достижения — из Steam через хелпер; бэкенд держит кэш на время работы, а между
+   запусками последний ответ лежит в localStorage: экран игры сразу с цифрами, свежие — следом. */
+const STATS_KEY = "carafe.stats.";
+
+function cachedStats(appid) {
+  try {
+    return JSON.parse(localStorage.getItem(STATS_KEY + appid) || "null");
+  } catch {
+    return null;
+  }
+}
+
+function saveStats(appid, data) {
+  try {
+    if (data) localStorage.setItem(STATS_KEY + appid, JSON.stringify(data));
+  } catch {}
+}
+
+// Вышли из Steam — чужие цифры следующему аккаунту не показываем.
+function clearStats() {
+  S.stats = {};
+  try {
+    Object.keys(localStorage)
+      .filter((k) => k.startsWith(STATS_KEY))
+      .forEach((k) => localStorage.removeItem(k));
+  } catch {}
+}
+
 async function loadStats(appid, fresh = false) {
-  const cur = S.stats[appid];
+  let cur = S.stats[appid];
   if (!S.account || cur?.loading) return;
+  if (!cur?.data) {
+    const saved = cachedStats(appid);
+    if (saved) cur = { data: saved };
+  }
   S.stats[appid] = { ...(cur || {}), loading: true };
-  if (S.view === "game" && S.appid === appid && !cur?.data) renderFacts();
+  if (S.view === "game" && S.appid === appid) cur?.data ? renderStats() : renderFacts();
   try {
     S.stats[appid] = { loading: false, data: await invoke("game_stats", { appid, fresh }) };
+    saveStats(appid, S.stats[appid].data);
   } catch (e) {
     // Не вышло — просто без этих блоков (или с прежними цифрами).
     S.stats[appid] = { loading: false, data: cur?.data ?? null, error: String(e) };
@@ -340,47 +372,45 @@ function go(view, appid = null) {
 
 document.querySelectorAll(".tab[data-view]").forEach((b) => b.addEventListener("click", () => go(b.dataset.view)));
 
-/* ---------- поиск в панели ---------- */
+/* ---------- поиск и фильтры библиотеки ---------- */
 
-const q = $("#q");
-const searchBtn = $("#search-btn");
-searchBtn.innerHTML = I.search;
-
-function openSearch() {
-  q.hidden = false;
-  searchBtn.hidden = true;
-  q.focus();
-}
-
-function closeSearch() {
-  q.value = "";
-  q.hidden = true;
-  searchBtn.hidden = false;
-  if (S.q) {
-    S.q = "";
-    if (S.view === "library") renderLibraryBody();
+// Фильтры помнятся между запусками; хранилище может не открыться — тогда просто по умолчанию.
+function loadFilter() {
+  try {
+    const f = JSON.parse(localStorage.getItem("carafe.filter") || "{}");
+    return { installed: !!f.installed, mac: !!f.mac };
+  } catch {
+    return { installed: false, mac: false };
   }
 }
+S.filter = loadFilter();
 
-searchBtn.addEventListener("click", openSearch);
-q.addEventListener("input", () => {
-  S.q = q.value;
+function saveFilter() {
+  try {
+    localStorage.setItem("carafe.filter", JSON.stringify(S.filter));
+  } catch {}
+}
+
+const filtering = () => S.filter.installed || S.filter.mac || !!S.q.trim();
+
+function resetFilters() {
+  S.q = "";
+  S.filter = { installed: false, mac: false };
+  saveFilter();
+  const q = $("#q");
+  if (q) q.value = "";
+  renderLibraryBody();
+}
+
+function focusSearch() {
   if (S.view !== "library") go("library");
-  else renderLibraryBody();
-});
-q.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") {
-    closeSearch();
-    searchBtn.focus();
-  }
-});
-q.addEventListener("blur", () => {
-  if (!q.value) closeSearch();
-});
+  $("#q")?.focus();
+}
+
 document.addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === "f") {
     e.preventDefault();
-    openSearch();
+    focusSearch();
   }
 });
 
@@ -417,8 +447,45 @@ function renderLibrary() {
   main.innerHTML = `
     <div class="view">
       <div id="notice" hidden></div>
-      <div id="lib-body" class="section" style="gap:48px"></div>
+      <div id="lib-hero"></div>
+      <section class="section" aria-label="Игры">
+        <div class="lib-tools">
+          <div class="filters" role="radiogroup" aria-label="Какие игры">
+            <button class="chip" role="radio" data-filter="all">Все<span class="chip-n" id="n-all"></span></button>
+            <button class="chip" role="radio" data-filter="installed">Установлено<span class="chip-n" id="n-installed"></span></button>
+          </div>
+          <button class="chip" id="f-mac" aria-pressed="false">${I.apple}Для Mac</button>
+          <label class="lib-search">${I.search}<input id="q" type="search" placeholder="Поиск" aria-label="Поиск по библиотеке" spellcheck="false" autocomplete="off"></label>
+        </div>
+        <div id="lib-body"></div>
+      </section>
     </div>`;
+  const q = $("#q");
+  q.value = S.q;
+  q.addEventListener("input", () => {
+    S.q = q.value;
+    renderLibraryBody();
+  });
+  q.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && q.value) {
+      e.stopPropagation();
+      q.value = "";
+      S.q = "";
+      renderLibraryBody();
+    }
+  });
+  main.querySelectorAll("[data-filter]").forEach((b) =>
+    b.addEventListener("click", () => {
+      S.filter.installed = b.dataset.filter === "installed";
+      saveFilter();
+      renderLibraryBody();
+    }),
+  );
+  $("#f-mac").addEventListener("click", () => {
+    S.filter.mac = !S.filter.mac;
+    saveFilter();
+    renderLibraryBody();
+  });
   renderNotice();
   renderLibraryBody();
 }
@@ -456,36 +523,55 @@ function gameStatus(g) {
   return ["ok", "ГОТОВА"];
 }
 
+// Какие сборки есть: нативная для macOS и Windows (через carafe).
+const hasMac = (g) => g.platform === "macos" || !!g.macos;
+const hasWin = (g) => (g.installed ? g.platform === "windows" || g.windows !== false : g.windows !== false);
+
+function platforms(g) {
+  const mac = hasMac(g) ? `<span class="os" title="Есть сборка для macOS">${I.apple}<span class="sr">macOS</span></span>` : "";
+  const win = hasWin(g) ? `<span class="os" title="Сборка для Windows, через carafe">${I.windows}<span class="sr">Windows</span></span>` : "";
+  return mac || win ? `<span class="oses">${mac}${win}</span>` : "";
+}
+
 function renderLibraryBody() {
   const el = $("#lib-body");
   if (!el) return;
+  const heroEl = $("#lib-hero");
+  main.querySelectorAll("[data-filter]").forEach((b) => b.setAttribute("aria-checked", String((b.dataset.filter === "installed") === S.filter.installed)));
+  $("#f-mac")?.setAttribute("aria-pressed", String(S.filter.mac));
   if (!S.games) {
-    el.innerHTML = `<div class="hero skel"></div>
-      <section class="section"><div class="skel-line" style="width:160px;height:32px"></div>${skelGrid(6)}</section>`;
+    heroEl.innerHTML = `<div class="hero skel"></div>`;
+    el.innerHTML = skelGrid(6);
     return;
   }
   const q = S.q.trim().toLowerCase();
-  const match = (g) => !q || g.name.toLowerCase().includes(q);
-  const installed = S.games.filter((g) => g.installed && match(g));
-  const owned = S.games.filter((g) => !g.installed && match(g));
-  if (q && !installed.length && !owned.length) {
-    el.innerHTML = `<div class="empty rise">${I.search}<h3>Ничего не нашлось</h3>
-      <button class="btn btn-sm" id="clear-q">Сбросить поиск</button></div>`;
-    $("#clear-q").onclick = closeSearch;
-    return;
-  }
-  const hero = q ? null : pickHero();
-  el.innerHTML = `
-    ${hero ? heroHtml(hero) : ""}
-    <section class="section" aria-labelledby="h-installed">
-      <div class="section-head"><h2 id="h-installed">Установлено</h2><span class="caption">${installed.length}</span></div>
-      ${
-        installed.length
-          ? `<div class="grid">${installed.map(installedCard).join("")}</div>`
-          : `<div class="empty">${I.game}<h3>Пока ничего не установлено</h3></div>`
-      }
-    </section>
-    ${ownedSection(owned, q)}`;
+  const base = S.games.filter((g) => (!q || g.name.toLowerCase().includes(q)) && (!S.filter.mac || hasMac(g)));
+  const list = S.filter.installed ? base.filter((g) => g.installed) : base;
+  $("#n-all").textContent = base.length;
+  $("#n-installed").textContent = base.filter((g) => g.installed).length;
+  const hero = filtering() ? null : pickHero();
+  heroEl.innerHTML = hero ? heroHtml(hero) : "";
+  heroEl.hidden = !hero;
+  let html = "";
+  if (list.length) html = `<div class="grid">${list.map(gameCard).join("")}</div>`;
+  else if (filtering())
+    html = `<div class="empty rise">${I.search}<h3>Ничего не нашлось</h3>
+      <button class="btn btn-sm" id="clear-q">Сбросить фильтры</button></div>`;
+  else if (!S.account && !S.ownedLoading) html = "";
+  else if (!S.ownedLoading) html = `<div class="empty">${I.game}<h3>Пока ничего не установлено</h3></div>`;
+  html += ownedFooter();
+  el.innerHTML = html;
+  const clear = $("#clear-q");
+  if (clear) clear.onclick = resetFilters;
+}
+
+// Под сеткой: войти в Steam (тогда видна вся библиотека) или скелет, пока она грузится.
+function ownedFooter() {
+  if (S.account === null && !S.filter.installed)
+    return `<div class="empty">${I.steam}<h3>Вся библиотека Steam</h3>
+      <button class="btn btn-primary" data-login>${I.steam}Войти через Steam</button></div>`;
+  if (S.ownedLoading && !S.filter.installed) return skelGrid(6);
+  return "";
 }
 
 function heroHtml(g) {
@@ -515,55 +601,43 @@ function heroHtml(g) {
     </section>`;
 }
 
-function installedCard(g, i) {
-  const [cls, word] = gameStatus(g);
-  const can = g.available !== false && !running(`launch:${g.appid}`);
-  return `
-    <div class="card-wrap rise" style="animation-delay:${Math.min(i, 12) * 30}ms">
-      <button class="card" data-open="${g.appid}" aria-label="${esc(g.name)}">
-        <span class="cover">${cover(g)}</span>
-        <span class="card-meta">
-          <span class="card-name">${esc(g.name)}</span>
-          <span class="status">${dot(cls)}<span>${word}</span></span>
-        </span>
-      </button>
-      ${can ? `<button class="cover-play" data-play="${g.appid}" aria-label="Играть: ${esc(g.name)}">${I.play}</button>` : ""}
-    </div>`;
-}
-
-function ownedSection(list, q) {
-  const head = `<div class="section-head"><h2 id="h-owned">В библиотеке Steam</h2><span class="caption">не установлены</span></div>`;
-  if (S.account === null && !list.length) {
-    if (q) return "";
-    return `<section class="section" aria-labelledby="h-owned">${head}
-      <div class="empty">${I.steam}<h3>Вся библиотека Steam</h3>
-        <button class="btn btn-primary" data-login>${I.steam}Войти через Steam</button></div></section>`;
-  }
-  if (S.ownedLoading && !list.length) return `<section class="section" aria-labelledby="h-owned">${head}${skelGrid(6)}</section>`;
-  if (!list.length) return "";
-  return `<section class="section" aria-labelledby="h-owned">${head}
-    <div class="grid">${list.map(ownedCard).join("")}</div></section>`;
-}
-
-function ownedCard(g, i) {
+/* Одна карточка на любую игру. Не установленная — обложка чёрно-белая; пока качается, цвет
+   поднимается снизу по проценту загрузки. */
+function gameCard(g, i) {
   const d = queued(g.appid);
   const pct = d && d.totalBytes ? Math.floor((d.doneBytes / d.totalBytes) * 100) : 0;
   const badge = d
     ? d.state === "active"
       ? `${pct}%`
       : { queued: "В ОЧЕРЕДИ", paused: "ПАУЗА", failed: "ОШИБКА" }[d.state]
-    : noBuild(g)
+    : !g.installed && noBuild(g)
       ? "НЕТ СБОРКИ"
       : null;
-  const bytes = g.macos ? g.macosSizeBytes || g.sizeBytes : g.sizeBytes;
+  const fill =
+    d && !g.installed
+      ? `<span class="cover-fill" data-dl-fill="${g.appid}" style="transform:translateY(${100 - pct}%)"><span class="cover-fill-in" style="transform:translateY(${pct - 100}%)">${cover(g)}</span></span>`
+      : "";
+  let sub;
+  if (g.installed) {
+    const [cls, word] = gameStatus(g);
+    sub = `<span class="status">${dot(cls)}<span>${word}</span></span>`;
+  } else {
+    const bytes = g.macos ? g.macosSizeBytes || g.sizeBytes : g.sizeBytes;
+    sub = `<span class="card-size">${esc(size(bytes) || "")}</span>`;
+  }
+  const can = g.installed && g.available !== false && !running(`launch:${g.appid}`);
   return `
-    <button class="card owned rise ${noBuild(g) ? "faded" : ""}" data-open="${g.appid}" style="animation-delay:${Math.min(i, 12) * 30}ms">
-      <span class="cover">${cover(g)}${badge ? `<span class="tag" data-dl-tag="${g.appid}">${badge}</span>` : ""}</span>
-      <span class="card-meta">
-        <span class="card-row"><span class="card-name">${esc(g.name)}</span><span class="card-size">${g.macos ? `<span class="mac-mark" title="Есть сборка для macOS">MAC</span>` : ""}${esc(size(bytes) || "")}</span></span>
-        ${d ? `<span class="bar" data-dl-bar="${g.appid}" role="progressbar" aria-label="Загрузка" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><i style="transform:scaleX(${pct / 100})"></i></span>` : ""}
-      </span>
-    </button>`;
+    <div class="card-wrap rise" style="animation-delay:${Math.min(i, 12) * 30}ms">
+      <button class="card ${g.installed ? "" : "owned"} ${!g.installed && noBuild(g) ? "faded" : ""}" data-open="${g.appid}" aria-label="${esc(g.name)}${g.installed ? "" : ", не установлена"}">
+        <span class="cover ${g.installed ? "" : "mono"}">${cover(g)}${fill}${badge ? `<span class="tag" data-dl-tag="${g.appid}">${badge}</span>` : ""}</span>
+        <span class="card-meta">
+          <span class="card-row"><span class="card-name">${esc(g.name)}</span>${platforms(g)}</span>
+          ${sub}
+          ${d ? `<span class="bar" data-dl-bar="${g.appid}" role="progressbar" aria-label="Загрузка" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><i style="transform:scaleX(${pct / 100})"></i></span>` : ""}
+        </span>
+      </button>
+      ${can ? `<button class="cover-play" data-play="${g.appid}" aria-label="Играть: ${esc(g.name)}">${I.play}</button>` : ""}
+    </div>`;
 }
 
 // Ставить нечего: ни Windows-, ни macOS-сборки.
@@ -769,7 +843,9 @@ function renderActions() {
       ? `<button class="btn btn-ghost" id="build" ${building ? "disabled" : ""}>${I.bridge}${building ? "Собираю мост" : "Собрать мост"}</button>`
       : "";
   const details = `<button class="btn btn-ghost btn-icon" id="details" aria-label="Подробности" title="Подробности" aria-haspopup="dialog" aria-expanded="${S.sheet ? "true" : "false"}">${I.dots}</button>`;
-  const html = main_ + bridge + libraryActions(g) + details;
+  // Страница игры в библиотеке клиента Steam.
+  const steam = `<button class="btn btn-ghost btn-icon" id="steam-page" aria-label="Открыть в Steam" title="Открыть в Steam">${I.steam}</button>`;
+  const html = main_ + bridge + libraryActions(g) + steam + details;
   // Опрос загрузок зовёт это раз в секунду: без изменений DOM не трогаем, иначе кнопки
   // теряют наведение и фокус.
   if (el.dataset.html !== html) {
@@ -780,6 +856,7 @@ function renderActions() {
     const b = $("#build");
     if (b) b.onclick = () => buildBridge(g.appid);
     $("#details").onclick = () => (S.sheet ? closeSheet() : openSheet());
+    $("#steam-page").onclick = () => invoke("open_steam_page", { appid: g.appid }).catch(toast);
     if (had && el.querySelector(`#${had}`)) $(`#${had}`).focus();
   }
   const err = $("#launch-err");

@@ -104,11 +104,136 @@
   padding-top: 12px;
 }
 
-/* Купленная игра с нативной сборкой для macOS: тихая моно-метка рядом с размером. */
-.mac-mark {
-  font: 500 12px/16px var(--mono);
+/* ---------- библиотека: фильтры и поиск ---------- */
+
+.lib-tools {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.filters {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  font: 600 14px/20px var(--sans);
   color: var(--text-2);
-  margin-right: 8px;
+}
+
+.chip svg {
+  width: 16px;
+  height: 16px;
+}
+
+.chip:hover {
+  color: var(--text);
+}
+
+.chip[aria-checked="true"],
+.chip[aria-pressed="true"] {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+#f-mac {
+  border: 1px solid var(--line);
+  min-height: 46px;
+  padding: 12px 16px;
+  border-radius: 16px;
+}
+
+.chip-n {
+  font: 500 12px/16px var(--mono);
+  color: var(--text-3);
+}
+
+.lib-search {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 240px;
+  min-height: 46px;
+  padding: 0 16px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  color: var(--text-3);
+}
+
+.lib-search:focus-within {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+.lib-search svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+.lib-search input {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: 0;
+  outline: none;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--text);
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.lib-search input::placeholder {
+  color: var(--text-3);
+}
+
+#lib-body {
+  display: flex;
+  flex-direction: column;
+  gap: 48px;
+}
+
+/* Не установлена — обложка чёрно-белая; при загрузке цветная копия поднимается снизу. */
+.cover.mono > img {
+  filter: grayscale(1);
+}
+
+.cover-fill,
+.cover-fill-in {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  transition: transform var(--t-move);
+}
+
+/* Значки сборок рядом с названием: яблоко — нативно на Mac, окно — Windows через carafe. */
+.oses {
+  display: inline-flex;
+  gap: 8px;
+  flex: none;
+  color: var(--text-3);
+}
+
+.os {
+  display: inline-flex;
+}
+
+.os svg {
+  width: 14px;
+  height: 14px;
 }
 
 /* ---------- настройки: библиотеки ---------- */

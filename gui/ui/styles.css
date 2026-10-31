@@ -311,23 +311,6 @@ svg {
   flex: none;
 }
 
-.nav-search {
-  width: 200px;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 7px 12px;
-  font-size: 14px;
-  line-height: 20px;
-  outline-offset: 2px;
-  user-select: text;
-  -webkit-user-select: text;
-}
-
-.nav-search::placeholder {
-  color: var(--text-3);
-}
-
 .account {
   display: flex;
   align-items: center;

@@ -488,6 +488,13 @@ async fn game_stats(
         .map(clean)
 }
 
+/// Открыть игру в клиенте Steam.
+#[tauri::command]
+async fn open_steam_page(app: State<'_, App>, appid: AppId) -> Result<(), String> {
+    let b = app.backend();
+    blocking(move || b.open_steam_page(appid)).await
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -543,6 +550,7 @@ fn main() {
             steam_logout,
             owned_games,
             game_stats,
+            open_steam_page,
         ])
         .build(tauri::generate_context!())
         .expect("carafe-gui")

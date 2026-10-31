@@ -595,6 +595,11 @@ pub trait Backend: Send + Sync {
     /// Открыть Steam для Mac (мост и облако говорят с ним).
     fn open_steam(&self) -> Result<()>;
 
+    /// Страница игры в библиотеке клиента Steam (`steam://nav/games/details/<appid>`).
+    fn open_steam_page(&self, _appid: AppId) -> Result<()> {
+        unsupported()
+    }
+
     /// Папки библиотек: встроенная первой.
     fn libraries(&self) -> Result<Vec<Library>> {
         unsupported()
