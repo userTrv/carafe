@@ -1103,6 +1103,10 @@ impl Backend for MockBackend {
         Ok(())
     }
 
+    fn open_steam_page(&self, _appid: AppId) -> Result<()> {
+        Ok(())
+    }
+
     fn libraries(&self) -> Result<Vec<Library>> {
         wait(150);
         let st = self.lock();

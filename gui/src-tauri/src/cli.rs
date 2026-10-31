@@ -660,6 +660,19 @@ impl Backend for CliBackend {
         }
     }
 
+    fn open_steam_page(&self, appid: AppId) -> Result<()> {
+        let url = format!("steam://nav/games/details/{appid}");
+        let ok = Command::new("/usr/bin/open")
+            .arg(&url)
+            .status()
+            .is_ok_and(|s| s.success());
+        if ok {
+            Ok(())
+        } else {
+            Err(BackendError::new("не нашёл Steam для Mac"))
+        }
+    }
+
     fn libraries(&self) -> Result<Vec<Library>> {
         Ok(self
             .core

@@ -133,6 +133,11 @@ function updateOwnedProgress() {
     const pct = Math.floor(pctOf(d));
     const tag = document.querySelector(`[data-dl-tag="${d.appid}"]`);
     if (tag) tag.textContent = `${pct}%`;
+    const fill = document.querySelector(`[data-dl-fill="${d.appid}"]`);
+    if (fill) {
+      fill.style.transform = `translateY(${100 - pct}%)`;
+      fill.firstElementChild.style.transform = `translateY(${pct - 100}%)`;
+    }
     const bar = document.querySelector(`[data-dl-bar="${d.appid}"]`);
     if (bar) {
       bar.setAttribute("aria-valuenow", pct);

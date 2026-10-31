@@ -106,6 +106,7 @@ function cancelLogin() {
 async function steamLogout() {
   try {
     await invoke("steam_logout");
+    clearStats();
     toast("Вышел из Steam", "ok");
   } catch (e) {
     toast(e);
